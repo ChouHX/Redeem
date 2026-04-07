@@ -5,12 +5,17 @@
   "type": "module",
   "scripts": {
     "build": "npm --prefix ui run build",
-    "dev": "node --watch src/server.js",
+    "dev": "concurrently -k -n server,ui -c blue,magenta \"npm run dev:server\" \"npm run dev:ui\"",
+    "dev:server": "node --watch src/server.js",
+    "dev:ui": "npm --prefix ui run dev",
     "package:docker": "bash ./scripts/package-docker-bundle.sh",
     "ui:dev": "npm --prefix ui run dev",
     "ui:build": "npm --prefix ui run build",
     "start": "node src/server.js",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
