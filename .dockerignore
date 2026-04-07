@@ -1,0 +1,12 @@
+node_modules/
+ui/node_modules/
+ui/dist/
+npm-debug.log*
+.env
+config.txt
+outlook_manager.db
+outlook_manager.db-shm
+outlook_manager.db-wal
+data/
+Dockerfile*
+README.md

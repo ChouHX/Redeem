@@ -1,0 +1,23 @@
+{
+  "name": "outlook-manager-node-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix ui run build",
+    "dev": "node --watch src/server.js",
+    "package:docker": "bash ./scripts/package-docker-bundle.sh",
+    "ui:dev": "npm --prefix ui run dev",
+    "ui:build": "npm --prefix ui run build",
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "imapflow": "^1.0.181",
+    "mailparser": "^3.7.2"
+  }
+}
