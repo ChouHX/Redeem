@@ -23,6 +23,7 @@ import {
   getRedeemCodesByIds,
   getRedeemCodesForExport,
   getRedeemRecordsByCodeId,
+  getRedeemRecordsByCodeIdPaged,
   getMailboxAccountFromInventory,
   getRedeemAdminOverview,
   getRedeemCodesPaged,
@@ -574,6 +575,8 @@ app.get("/api/redeem/catalog", (_, res) => {
 
 app.post("/api/redeem/access", async (req, res) => {
   const code = String(req.body?.code || "").trim();
+  const page = parseBoundedInt(req.body?.page, 1, { min: 1, max: 100000 });
+  const pageSize = parseBoundedInt(req.body?.page_size, 10, { min: 1, max: 100 });
   if (!code) {
     res.status(400).json(fail("请输入兑换码"));
     return;
@@ -609,8 +612,14 @@ app.post("/api/redeem/access", async (req, res) => {
             source: "newly_redeemed",
             code: redeemed.code.code,
             redeemed_at: redeemed.code.redeemed_at,
-            items: redeemed.inventories.map((inventory) =>
-              formatRedeemedInventory(redeemed.type, inventory.payload)
+            total: redeemed.redeemed_count,
+            page,
+            page_size: pageSize,
+            items: getRedeemRecordsByCodeIdPaged(redeemed.code.id, {
+              page,
+              page_size: pageSize
+            }).items.map((record) =>
+              formatPublicRedeemRecord(record)
             )
           },
           "兑换码已兑换并载入邮箱"
@@ -619,14 +628,20 @@ app.post("/api/redeem/access", async (req, res) => {
       return;
     }
 
-    const records = getRedeemRecordsByCodeId(codeInfo.id);
+    const records = getRedeemRecordsByCodeIdPaged(codeInfo.id, {
+      page,
+      page_size: pageSize
+    });
     res.json(
       ok(
         {
           source: "existing",
           code: codeInfo.code,
           redeemed_at: codeInfo.redeemed_at,
-          items: records.map(formatPublicRedeemRecord)
+          total: records.total,
+          page: records.page,
+          page_size: records.page_size,
+          items: records.items.map(formatPublicRedeemRecord)
         },
         "已载入兑换码对应邮箱"
       )

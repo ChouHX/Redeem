@@ -72,6 +72,9 @@ export type RedeemAccessResult = {
   source: "newly_redeemed" | "existing"
   code: string
   redeemed_at: string | null
+  total: number
+  page: number
+  page_size: number
   items: RedeemedItem[]
 }
 
@@ -431,10 +434,20 @@ export async function queryRedeemOrder(code: string) {
   return payload.data
 }
 
-export async function accessMailboxByCode(code: string) {
+export async function accessMailboxByCode(
+  code: string,
+  params: {
+    page?: number
+    page_size?: number
+  } = {}
+) {
   const payload = await apiRequest<RedeemAccessResult>("/api/redeem/access", {
     method: "POST",
-    body: { code },
+    body: {
+      code,
+      page: params.page,
+      page_size: params.page_size,
+    },
   })
   return payload
 }

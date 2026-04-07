@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   CopyIcon,
+  EllipsisVerticalIcon,
   EyeIcon,
   InfoIcon,
   KeyRoundIcon,
@@ -17,6 +18,7 @@ import {
   type MailListResult,
   type MailMessage,
   type MailMessageSummary,
+  type RedeemAccessResult,
   type RedeemedItem,
   type TempMailAccount,
   fetchMailboxMessageDetail,
@@ -41,6 +43,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Field,
   FieldContent,
@@ -93,6 +102,12 @@ type MailboxEntry = {
 type FolderMailLists = Record<MailFolder, MailListResult | null>
 type FolderLoadingState = Record<MailFolder, boolean>
 type FolderSelectionState = Record<MailFolder, string>
+type RedeemMailboxPageState = {
+  items: MailboxEntry[]
+  total: number
+  page: number
+  page_size: number
+}
 
 const TEMP_ACCOUNT_STORAGE_KEY = "tempAccount"
 const DEFAULT_PAGE_SIZE = 10
@@ -232,6 +247,23 @@ function buildMailboxCollection(
   return Array.from(map.values())
 }
 
+function mergeMailboxEntries(
+  current: MailboxEntry[],
+  next: MailboxEntry[]
+) {
+  const map = new Map<string, MailboxEntry>()
+
+  for (const mailbox of current) {
+    map.set(mailbox.email.toLowerCase(), mailbox)
+  }
+
+  for (const mailbox of next) {
+    map.set(mailbox.email.toLowerCase(), mailbox)
+  }
+
+  return Array.from(map.values())
+}
+
 function formatFolderLabel(folder: MailFolder) {
   return folder === "spam" ? "垃圾箱" : "收件箱"
 }
@@ -304,17 +336,31 @@ function formatDetailMailDate(value: string | undefined) {
   })
 }
 
+function sanitizeStyleContent(value: string) {
+  return String(value || "")
+    .replace(/@import[\s\S]*?;/gi, "")
+    .replace(/expression\s*\([^)]*\)/gi, "")
+    .replace(/url\s*\(\s*['"]?\s*javascript:[^)]*\)/gi, "url()")
+}
+
 function sanitizeHtml(html: string) {
   const parser = new DOMParser()
   const doc = parser.parseFromString(String(html || ""), "text/html")
 
   doc
     .querySelectorAll(
-      "script, style, iframe, object, embed, link, meta, base, form"
+      "script, iframe, object, embed, link, meta, base, form"
     )
     .forEach((node) => {
       node.remove()
     })
+
+  const styleBlocks = Array.from(doc.querySelectorAll("style")).map((node) => {
+    const nextStyle = doc.createElement("style")
+    nextStyle.textContent = sanitizeStyleContent(node.textContent || "")
+    node.remove()
+    return nextStyle.outerHTML
+  })
 
   doc.querySelectorAll("*").forEach((element) => {
     Array.from(element.attributes).forEach((attribute) => {
@@ -347,7 +393,63 @@ function sanitizeHtml(html: string) {
     })
   })
 
-  return doc.body.innerHTML
+  return `${styleBlocks.join("\n")}${doc.body.innerHTML}`
+}
+
+function MailHtmlContent({ html }: { html: string }) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const shadowRootRef = useRef<ShadowRoot | null>(null)
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) {
+      return
+    }
+
+    if (!shadowRootRef.current) {
+      shadowRootRef.current = host.attachShadow({ mode: "open" })
+    }
+
+    const shadowRoot = shadowRootRef.current
+    shadowRoot.innerHTML = `
+      <style>
+        :host {
+          display: block;
+          color: var(--foreground);
+        }
+
+        .mail-html-root {
+          min-height: 100%;
+          color: inherit;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+
+        .mail-html-root,
+        .mail-html-root * {
+          box-sizing: border-box;
+        }
+
+        .mail-html-root img,
+        .mail-html-root table,
+        .mail-html-root iframe,
+        .mail-html-root video {
+          max-width: 100%;
+        }
+
+        .mail-html-root img {
+          height: auto;
+        }
+
+        .mail-html-root pre {
+          white-space: pre-wrap;
+        }
+      </style>
+      <div class="mail-html-root">${html || "<div>(无内容)</div>"}</div>
+    `
+  }, [html])
+
+  return <div ref={hostRef} className="mail-html-host" />
 }
 
 function resolveMailAddress(address?: MailAddress) {
@@ -427,6 +529,13 @@ export function MailConsole() {
     refreshToken: "",
   })
   const [redeemMailboxes, setRedeemMailboxes] = useState<MailboxEntry[]>([])
+  const [redeemAccess, setRedeemAccess] = useState<Pick<
+    RedeemAccessResult,
+    "code" | "source" | "redeemed_at"
+  > | null>(null)
+  const [redeemMailboxPage, setRedeemMailboxPage] =
+    useState<RedeemMailboxPageState | null>(null)
+  const [accountsLoading, setAccountsLoading] = useState(false)
   const [codeLoading, setCodeLoading] = useState(false)
   const sidebarScrollRefs = useRef<Record<MailFolder, HTMLDivElement | null>>({
     inbox: null,
@@ -455,6 +564,34 @@ export function MailConsole() {
   const mailboxes = useMemo(
     () => buildMailboxCollection(redeemMailboxes, tempAccount),
     [redeemMailboxes, tempAccount]
+  )
+  const accountListMailboxes = useMemo(() => {
+    const visible: MailboxEntry[] = []
+    const seen = new Set<string>()
+
+    if (tempAccount?.email) {
+      const tempEntry = createTempMailboxEntry(tempAccount)
+      visible.push(tempEntry)
+      seen.add(tempEntry.email.toLowerCase())
+    }
+
+    for (const mailbox of redeemMailboxPage?.items || []) {
+      const key = mailbox.email.toLowerCase()
+      if (seen.has(key)) {
+        continue
+      }
+      visible.push(mailbox)
+      seen.add(key)
+    }
+
+    return visible
+  }, [redeemMailboxPage, tempAccount])
+  const accountListPageCount = Math.max(
+    Math.ceil(
+      (redeemMailboxPage?.total || 0) /
+        (redeemMailboxPage?.page_size || DEFAULT_PAGE_SIZE)
+    ),
+    1
   )
 
   const selectedMailbox = useMemo(
@@ -511,6 +648,12 @@ export function MailConsole() {
         "destructive"
       )
     }
+  }
+
+  function resetRedeemMailboxAccess() {
+    setRedeemAccess(null)
+    setRedeemMailboxPage(null)
+    setRedeemMailboxes([])
   }
 
   function resetMailboxView(nextFolder: MailFolder = "inbox") {
@@ -697,6 +840,86 @@ export function MailConsole() {
     })
   }
 
+  async function loadRedeemMailboxPage(
+    codeValue: string,
+    {
+      page = 1,
+      replaceCache = false,
+      activateFirst = false,
+      resetOnError = false,
+      openDialog = false,
+    }: {
+      page?: number
+      replaceCache?: boolean
+      activateFirst?: boolean
+      resetOnError?: boolean
+      openDialog?: boolean
+    } = {}
+  ) {
+    setAccountsLoading(true)
+
+    try {
+      const payload = await accessMailboxByCode(codeValue, {
+        page,
+        page_size: DEFAULT_PAGE_SIZE,
+      })
+      const nextMailboxes = payload.data.items
+        .map((item, index) =>
+          createRedeemMailboxEntry(
+            item,
+            (payload.data.page - 1) * payload.data.page_size + index
+          )
+        )
+        .filter((item): item is MailboxEntry => Boolean(item))
+
+      setRedeemAccess({
+        code: payload.data.code,
+        source: payload.data.source,
+        redeemed_at: payload.data.redeemed_at,
+      })
+      setRedeemMailboxPage({
+        items: nextMailboxes,
+        total: payload.data.total,
+        page: payload.data.page,
+        page_size: payload.data.page_size,
+      })
+      setRedeemMailboxes((current) =>
+        replaceCache ? nextMailboxes : mergeMailboxEntries(current, nextMailboxes)
+      )
+
+      if (openDialog) {
+        setAccountsDialogOpen(true)
+      }
+
+      if (activateFirst) {
+        const initialMailbox =
+          nextMailboxes[0] ||
+          (tempAccount?.email ? createTempMailboxEntry(tempAccount) : null)
+
+        if (initialMailbox) {
+          void activateMailbox(initialMailbox, "inbox")
+        } else {
+          resetMailboxView("inbox")
+        }
+      }
+
+      return payload.data
+    } catch (error) {
+      if (resetOnError) {
+        resetRedeemMailboxAccess()
+        resetMailboxView("inbox")
+      }
+      notify(
+        resetOnError ? "兑换码无效" : "账户列表加载失败",
+        formatErrorMessage(error),
+        "destructive"
+      )
+      return null
+    } finally {
+      setAccountsLoading(false)
+    }
+  }
+
   async function loadMailboxesByCode(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const nextCode = code.trim()
@@ -708,39 +931,35 @@ export function MailConsole() {
     setCodeLoading(true)
 
     try {
-      const payload = await accessMailboxByCode(nextCode)
-      const nextMailboxes = payload.data.items
-        .map((item, index) => createRedeemMailboxEntry(item, index))
-        .filter((item): item is MailboxEntry => Boolean(item))
-
-      setRedeemMailboxes(nextMailboxes)
       setCodeDialogOpen(false)
-      setAccountsDialogOpen(true)
-
-      const initialMailbox =
-        nextMailboxes[0] ||
-        buildMailboxCollection(nextMailboxes, tempAccount)[0] ||
-        null
-
-      if (initialMailbox) {
-        await activateMailbox(initialMailbox, "inbox")
-      } else {
-        resetMailboxView("inbox")
+      const payload = await loadRedeemMailboxPage(nextCode, {
+        page: 1,
+        replaceCache: true,
+        activateFirst: true,
+        resetOnError: true,
+        openDialog: true,
+      })
+      if (!payload) {
+        return
       }
 
       notify(
         "邮箱已载入",
-        payload.data.source === "newly_redeemed"
+        payload.source === "newly_redeemed"
           ? "兑换码已自动兑换，账户列表可在弹窗中查看。"
           : "已载入兑换码对应的邮箱列表。"
       )
-    } catch (error) {
-      setRedeemMailboxes([])
-      resetMailboxView("inbox")
-      notify("兑换码无效", formatErrorMessage(error), "destructive")
     } finally {
       setCodeLoading(false)
     }
+  }
+
+  async function handleRedeemMailboxPageChange(page: number) {
+    if (!redeemAccess?.code || accountsLoading) {
+      return
+    }
+
+    await loadRedeemMailboxPage(redeemAccess.code, { page })
   }
 
   async function applyTempAccount() {
@@ -982,9 +1201,9 @@ export function MailConsole() {
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-4">
           <div className="flex items-start gap-2">
             <h1 className="mt-1 text-lg text-foreground">
-              Redeem Mail
+              Mail Inbox
             </h1>
-            <InfoHint description="左侧按页加载并滚动浏览收件箱，右侧保留简洁阅读区。账户切换、临时账户和兑换码入口都集中在顶部按钮中。" />
+            <InfoHint description="顶部按钮用于管理邮箱数据：兑换码会导入该卡密对应的邮箱数据，账户列表用于查看和切换已载入的数据，临时账户可手动导入整行账号配置，刷新会重新拉取当前邮箱当前文件夹的邮件。" />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <ThemeToggle />
@@ -994,7 +1213,7 @@ export function MailConsole() {
           </div>
         </header>
 
-        <section className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[22rem_minmax(0,1fr)]">
+        <section className="grid min-h-0 flex-1 lg:grid-cols-[22rem_minmax(0,1fr)]">
           <Card className="gap-0 hidden min-h-0 border border-border/70 bg-card/92 backdrop-blur lg:flex lg:flex-col">
             <CardHeader className="border-b border-border/70">
               <div className="flex flex-wrap gap-2">
@@ -1040,39 +1259,44 @@ export function MailConsole() {
           <Card className="flex min-h-0 flex-col border border-border/70 bg-card/92 backdrop-blur">
             <CardHeader className="border-b border-border/70">
               <CardAction className="w-full lg:hidden">
-                <div className="grid w-full grid-cols-4 gap-2">
+                <div className="flex w-full items-center gap-2">
                   <Button
                     variant="outline"
                     size="sm"
+                    className="flex-1"
                     onClick={() => setSidebarSheetOpen(true)}
                   >
                     <LayoutPanelLeftIcon data-icon="inline-start" />
                     邮件列表
                   </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={!selectedMailbox || activeFolderLoading}
-                    onClick={() => void handleRefreshCurrentFolder()}
-                  >
-                    <RefreshCcwIcon data-icon="inline-start" />
-                    刷新
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setAccountsDialogOpen(true)}
-                  >
-                    账户列表
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setCodeDialogOpen(true)}
-                  >
-                    <KeyRoundIcon data-icon="inline-start" />
-                    兑换码
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm">
+                        <EllipsisVerticalIcon data-icon="inline-start" />
+                        更多
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        disabled={!selectedMailbox || activeFolderLoading}
+                        onSelect={() => void handleRefreshCurrentFolder()}
+                      >
+                        刷新
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onSelect={() => setAccountsDialogOpen(true)}
+                      >
+                        账户列表
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setTempDialogOpen(true)}>
+                        临时账户
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={() => setCodeDialogOpen(true)}>
+                        载入兑换码
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </CardAction>
               <CardTitle>邮件内容</CardTitle>
@@ -1099,9 +1323,9 @@ export function MailConsole() {
                   <Skeleton className="h-80 w-full" />
                 </div>
               ) : messageDetail ? (
-                <article className="flex min-h-0 flex-1 flex-col overflow-hidden py-4">
+                <article className="flex min-h-0 flex-1 flex-col overflow-hidden">
                   <div className="px-1">
-                    <h2 className="text-2xl font-semibold tracking-tight text-foreground sm:text-[2rem]">
+                    <h2 className="font-medium tracking-tight text-foreground sm:text-[1.2rem]">
                       {messageDetail.subject || "(无主题)"}
                     </h2>
                     <div className="mt-5 flex items-start gap-4">
@@ -1139,10 +1363,9 @@ export function MailConsole() {
 
                   <div className="min-h-0 flex-1 overflow-y-auto pt-5">
                     {isHtmlContent ? (
-                      <div
-                        className="mail-reader-body px-1"
-                        dangerouslySetInnerHTML={{ __html: sanitizedBody }}
-                      />
+                      <div className="px-1">
+                        <MailHtmlContent html={sanitizedBody} />
+                      </div>
                     ) : (
                       <div className="px-1 text-[15px] leading-7 whitespace-pre-wrap break-words text-foreground">
                         {bodyContent || "(无内容)"}
@@ -1167,32 +1390,6 @@ export function MailConsole() {
             <SheetDescription>
               分页浏览收件箱与垃圾箱，点开左侧邮件后会自动切回正文。
             </SheetDescription>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setAccountsDialogOpen(true)}
-              >
-                账户列表
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setTempDialogOpen(true)}
-              >
-                <UserRoundPlusIcon data-icon="inline-start" />
-                临时账户
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!selectedMailbox || activeFolderLoading}
-                onClick={() => void handleRefreshCurrentFolder()}
-              >
-                <RefreshCcwIcon data-icon="inline-start" />
-                刷新
-              </Button>
-            </div>
           </SheetHeader>
           <div className="flex min-h-0 flex-1 overflow-hidden">
             {sidebarContent}
@@ -1263,8 +1460,8 @@ export function MailConsole() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {mailboxes.length ? (
-                  mailboxes.map((mailbox) => (
+                {accountListMailboxes.length ? (
+                  accountListMailboxes.map((mailbox) => (
                     <TableRow
                       key={mailbox.id}
                       className={cn(
@@ -1354,6 +1551,44 @@ export function MailConsole() {
             </Table>
           </div>
           <DialogFooter className="border-t border-border/70 px-5 py-4">
+            {redeemMailboxPage ? (
+              <div className="flex flex-1 flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span>
+                  第 {redeemMailboxPage.page} / {accountListPageCount} 页，共{" "}
+                  {redeemMailboxPage.total} 个兑换邮箱
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={accountsLoading || redeemMailboxPage.page <= 1}
+                    onClick={() =>
+                      void handleRedeemMailboxPageChange(
+                        redeemMailboxPage.page - 1
+                      )
+                    }
+                  >
+                    上一页
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      accountsLoading || redeemMailboxPage.page >= accountListPageCount
+                    }
+                    onClick={() =>
+                      void handleRedeemMailboxPageChange(
+                        redeemMailboxPage.page + 1
+                      )
+                    }
+                  >
+                    下一页
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             <Button type="button" onClick={() => setAccountsDialogOpen(false)}>
               关闭
             </Button>

@@ -1180,6 +1180,46 @@ export function getRedeemRecordsByCodeId(codeId) {
   return rows.map(rowToRedeemRecord);
 }
 
+export function getRedeemRecordsByCodeIdPaged(codeId, { page = 1, page_size = 10 } = {}) {
+  const safeCodeId = Number(codeId);
+  const safePage = clampPositiveInt(page, 1);
+  const safePageSize = clampPositiveInt(page_size, 10, 100);
+  const totalRow = db
+    .prepare(
+      `
+        SELECT COUNT(*) AS total
+        FROM redeem_records
+        WHERE code_id = ?
+      `
+    )
+    .get(safeCodeId);
+
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          records.*,
+          types.name AS type_name,
+          types.slug AS type_slug,
+          types.field_schema,
+          types.import_delimiter
+        FROM redeem_records records
+        JOIN redeem_email_types types ON types.id = records.type_id
+        WHERE records.code_id = ?
+        ORDER BY records.id ASC
+        LIMIT ? OFFSET ?
+      `
+    )
+    .all(safeCodeId, safePageSize, Math.max(0, (safePage - 1) * safePageSize));
+
+  return {
+    items: rows.map(rowToRedeemRecord),
+    total: Number(totalRow?.total || 0),
+    page: safePage,
+    page_size: safePageSize
+  };
+}
+
 export function createRedeemCodes({
   type_id,
   count = 1,

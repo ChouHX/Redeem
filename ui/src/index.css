@@ -177,79 +177,8 @@
     mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 85%);
   }
 
-  .mail-reader-body {
-    color: var(--foreground);
-    font-size: 0.95rem;
-    line-height: 1.8;
-    word-break: break-word;
-  }
-
-  .mail-reader-body > :first-child {
-    margin-top: 0;
-  }
-
-  .mail-reader-body > :last-child {
-    margin-bottom: 0;
-  }
-
-  .mail-reader-body p,
-  .mail-reader-body div,
-  .mail-reader-body ul,
-  .mail-reader-body ol,
-  .mail-reader-body blockquote,
-  .mail-reader-body pre,
-  .mail-reader-body table {
-    max-width: 100%;
-  }
-
-  .mail-reader-body p,
-  .mail-reader-body ul,
-  .mail-reader-body ol,
-  .mail-reader-body blockquote,
-  .mail-reader-body pre,
-  .mail-reader-body table {
-    margin: 0 0 1rem;
-  }
-
-  .mail-reader-body ul,
-  .mail-reader-body ol {
-    padding-left: 1.25rem;
-  }
-
-  .mail-reader-body a {
-    color: var(--primary);
-    text-decoration: underline;
-    text-underline-offset: 2px;
-  }
-
-  .mail-reader-body img {
-    max-width: 100%;
-    height: auto;
-  }
-
-  .mail-reader-body blockquote {
-    border-left: 3px solid var(--border);
-    padding-left: 1rem;
-    color: var(--muted-foreground);
-  }
-
-  .mail-reader-body pre {
-    overflow-x: auto;
-    border: 1px solid var(--border);
-    background: var(--muted);
-    padding: 1rem;
-  }
-
-  .mail-reader-body table {
+  .mail-html-host {
     width: 100%;
-    border-collapse: collapse;
-  }
-
-  .mail-reader-body th,
-  .mail-reader-body td {
-    border: 1px solid var(--border);
-    padding: 0.625rem 0.75rem;
-    text-align: left;
-    vertical-align: top;
+    min-height: 100%;
   }
 }

@@ -2101,7 +2101,7 @@ export function AdminConsole() {
                     void loadCodes(undefined, { page: 1 })
                   }}
                 >
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1.4fr_1fr_1fr_auto]">
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-[1fr_1fr_1.4fr_1fr_1fr_auto]">
                     <Select
                       value={codeFilters.typeId || "all"}
                       onValueChange={(value) =>
@@ -3136,30 +3136,14 @@ export function AdminConsole() {
               {generatedCodes.length ? (
                 <div className="flex flex-col gap-3">
                   <p className="text-xs text-muted-foreground">最新生成结果</p>
-                  <div className="flex flex-col gap-2">
-                    {generatedCodes.map((item) => (
-                      <div
-                        key={item.id}
-                        className="flex items-center justify-between gap-3 border border-border/70 bg-background/70 px-3 py-2"
-                      >
-                        <div className="flex flex-col gap-1">
-                          <span className="font-mono text-xs">{item.code}</span>
-                          <span className="text-[11px] text-muted-foreground">
-                            {item.type_name} · 可兑 {item.quantity} 份
-                          </span>
-                        </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => void copyText(item.code, "兑换码")}
-                        >
-                          <CopyIcon data-icon="inline-start" />
-                          复制
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
+                  <Textarea
+                    value={generatedCodes.map((item) => item.code).join("\n")}
+                    readOnly
+                    rows={Math.max(6, Math.min(12, generatedCodes.length + 1))}
+                    wrap="off"
+                    spellCheck={false}
+                    className="min-h-40 resize-y overflow-x-auto font-mono text-xs leading-6"
+                  />
                 </div>
               ) : null}
             </div>
