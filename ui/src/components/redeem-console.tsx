@@ -13,11 +13,13 @@ import {
 import {
   type AdSlotConfig,
   ApiError,
+  type FaqConfig,
   type RedeemCatalog,
   type RedeemExchangeResult,
   type RedeemOrderQueryResult,
   exchangeRedeemCode,
   fetchPublicAds,
+  fetchPublicFaq,
   fetchRedeemCatalog,
   queryRedeemOrder,
 } from "@/lib/api"
@@ -25,6 +27,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { AdSlotCard } from "@/components/ad-slot-card"
+import { RichTextContent } from "@/components/rich-text-content"
 import {
   Card,
   CardAction,
@@ -217,6 +220,7 @@ function ResultOutputCard({
 export function RedeemConsole() {
   const [catalog, setCatalog] = useState<RedeemCatalog["types"]>([])
   const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
+  const [faq, setFaq] = useState<FaqConfig | null>(null)
   const [activeTab, setActiveTab] = useState("exchange")
   const [exchangeResult, setExchangeResult] = useState<RedeemExchangeResult | null>(null)
   const [exchangeCode, setExchangeCode] = useState("")
@@ -314,6 +318,16 @@ export function RedeemConsole() {
         setAdSlot(await fetchPublicAds())
       } catch {
         setAdSlot(null)
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setFaq(await fetchPublicFaq())
+      } catch {
+        setFaq(null)
       }
     })()
   }, [])
@@ -872,12 +886,14 @@ export function RedeemConsole() {
                             <button
                               type="button"
                               draggable
-                              key={field.key}
-                              onDragStart={() => setDraggedToolFieldKey(field.key)}
+                              onDragStart={(event) => {
+                                event.dataTransfer.effectAllowed = "move"
+                                setDraggedToolFieldKey(field.key)
+                              }}
                               onDragEnd={() => setDraggedToolFieldKey(null)}
                               onDragOver={(event) => event.preventDefault()}
                               onDragEnter={() => {
-                                if (draggedToolFieldKey) {
+                                if (draggedToolFieldKey && draggedToolFieldKey !== field.key) {
                                   moveToolFieldToTarget(draggedToolFieldKey, field.key)
                                 }
                               }}
@@ -888,7 +904,11 @@ export function RedeemConsole() {
                                 setDraggedToolFieldKey(null)
                               }}
                               onClick={() => toggleToolField(field.key, !field.enabled)}
-                              className="inline-flex items-center gap-2 px-3 py-1.5 text-xs transition-transform duration-150"
+                              className={
+                                draggedToolFieldKey === field.key
+                                  ? "inline-flex items-center gap-2 px-3 py-1.5 text-xs opacity-60 ring-1 ring-ring/40 transition-all duration-150 cursor-grabbing"
+                                  : "inline-flex items-center gap-2 px-3 py-1.5 text-xs transition-all duration-150 cursor-grab hover:bg-muted/50"
+                              }
                             >
                               <GripVerticalIcon data-icon="inline-start" />
                               <span>{field.label}</span>
@@ -906,6 +926,14 @@ export function RedeemConsole() {
               </Card>
             </TabsContent>
           </Tabs>
+
+          {faq?.html ? (
+            <Card className="border border-border/70 bg-card/92 backdrop-blur">
+              <CardContent>
+                <RichTextContent html={faq.html} />
+              </CardContent>
+            </Card>
+          ) : null}
         </section>
       </div>
     </main>

@@ -84,6 +84,18 @@ const DEFAULT_AD_SLOT = {
     href: "#"
   }
 };
+const DEFAULT_FAQ_HTML = `
+<h2>使用须知</h2>
+<ol>
+  <li><strong>严禁利用本站购买的账号用于一切非法用途。</strong> 本站只有义务出售，但无法管控使用权。您拥有使用权以后，请务必合法利用，切勿游走法律边缘。</li>
+  <li><strong>本站所出售的邮箱主要用于注册接收邮件。</strong> 禁止用于诈骗信息推广、违规信息推广以及其他非法用途。</li>
+  <li><strong>一旦本站发现用于非法用途，除封号外，本站将全力配合有关部门予以打击。</strong></li>
+  <li>邮箱如果收不到邮件，请先使用 <strong>IMAP 取件激活</strong> 一下。</li>
+</ol>
+<h2>Outlook 登录绕过辅助邮箱绑定</h2>
+<p>已触发 7 天的号，如果登录网页提示绑定辅助邮箱，可在绑定提示页面保持不关闭，直接在原页面地址栏粘贴以下链接进入邮箱：</p>
+<p><a href="https://outlook.live.com/mail/0/" target="_blank" rel="noreferrer">https://outlook.live.com/mail/0/</a></p>
+`.trim();
 
 app.use(cors());
 app.use(express.json({ limit: "4mb" }));
@@ -176,6 +188,17 @@ function getAdSlotConfig() {
 function saveAdSlotConfig(value) {
   const normalized = normalizeSharedAdSlotValue(value);
   setSystemConfigValue("ad_slot", JSON.stringify(normalized));
+  return normalized;
+}
+
+function getFaqHtml() {
+  const rawValue = getSystemConfigValue("faq_html");
+  return String(rawValue || DEFAULT_FAQ_HTML).trim();
+}
+
+function saveFaqHtml(value) {
+  const normalized = String(value || "").trim() || DEFAULT_FAQ_HTML;
+  setSystemConfigValue("faq_html", normalized);
   return normalized;
 }
 
@@ -594,6 +617,10 @@ app.get("/api/ui/ads", (_, res) => {
   res.json(ok(getAdSlotConfig(), "广告位配置获取成功"));
 });
 
+app.get("/api/ui/faq", (_, res) => {
+  res.json(ok({ html: getFaqHtml() }, "FAQ 配置获取成功"));
+});
+
 app.get("/api/system/config", requireAdmin, (_, res) => {
   res.json(ok(getSystemConfig()));
 });
@@ -615,6 +642,15 @@ app.get("/api/system/ads", requireAdmin, (_, res) => {
 app.post("/api/system/ads", requireAdmin, (req, res) => {
   const adSlot = saveAdSlotConfig(req.body || {});
   res.json(ok(adSlot, "广告位配置更新成功"));
+});
+
+app.get("/api/system/faq", requireAdmin, (_, res) => {
+  res.json(ok({ html: getFaqHtml() }, "FAQ 配置获取成功"));
+});
+
+app.post("/api/system/faq", requireAdmin, (req, res) => {
+  const html = saveFaqHtml(req.body?.html);
+  res.json(ok({ html }, "FAQ 配置更新成功"));
 });
 
 app.post("/api/test-email", requireAdmin, async (req, res) => {

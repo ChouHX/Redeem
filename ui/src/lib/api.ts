@@ -81,6 +81,10 @@ export type AdSlotConfig = {
   primary_action: AdSlotAction
 }
 
+export type FaqConfig = {
+  html: string
+}
+
 export type RedeemAccessResult = {
   source: "newly_redeemed" | "existing"
   code: string
@@ -432,6 +436,13 @@ export async function fetchPublicAds() {
   return payload.data
 }
 
+export async function fetchPublicFaq() {
+  const payload = await apiRequest<FaqConfig>("/api/ui/faq", {
+    method: "GET",
+  })
+  return payload.data
+}
+
 export async function exchangeRedeemCode(code: string) {
   const payload = await apiRequest<RedeemExchangeResult>(
     "/api/redeem/exchange",
@@ -600,6 +611,23 @@ export async function updateAdminAds(token: string, body: AdSlotConfig) {
     method: "POST",
     token,
     body,
+  })
+  return payload
+}
+
+export async function fetchAdminFaq(token: string) {
+  const payload = await apiRequest<FaqConfig>("/api/system/faq", {
+    method: "GET",
+    token,
+  })
+  return payload.data
+}
+
+export async function updateAdminFaq(token: string, markdown: string) {
+  const payload = await apiRequest<FaqConfig>("/api/system/faq", {
+    method: "POST",
+    token,
+    body: { html: markdown },
   })
   return payload
 }

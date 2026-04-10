@@ -23,6 +23,7 @@ import {
   type AdSlotConfig,
   ApiError,
   type AdminOverview,
+  type FaqConfig,
   type FieldSchema,
   type PagedResult,
   batchUpdateAdminCodes,
@@ -33,6 +34,7 @@ import {
   exportAdminCodesText,
   exportAdminInventoryText,
   fetchAdminAds,
+  fetchAdminFaq,
   type RedeemCodeItem,
   type RedeemInventoryItem,
   type RedeemRecordDetail,
@@ -54,11 +56,13 @@ import {
   updateAdminCodeStatus,
   updateAdminInventoryStatus,
   updateAdminAds,
+  updateAdminFaq,
   updateAdminPassword,
   updateAdminType,
   verifyAdminToken,
 } from "@/lib/api"
 import { AdSlotCard } from "@/components/ad-slot-card"
+import { RichTextContent, RichTextEditor } from "@/components/rich-text-content"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -499,6 +503,7 @@ export function AdminConsole() {
   const [activeTab, setActiveTab] = useState("inventory")
   const [overview, setOverview] = useState<AdminOverview | null>(null)
   const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
+  const [faq, setFaq] = useState<FaqConfig | null>(null)
   const [types, setTypes] = useState<RedeemType[]>([])
   const [inventory, setInventory] =
     useState<PagedResult<RedeemInventoryItem> | null>(null)
@@ -511,6 +516,7 @@ export function AdminConsole() {
   const [recordsLoading, setRecordsLoading] = useState(false)
   const [overviewLoading, setOverviewLoading] = useState(false)
   const [adsLoading, setAdsLoading] = useState(false)
+  const [faqLoading, setFaqLoading] = useState(false)
   const [typeDialogOpen, setTypeDialogOpen] = useState(false)
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
   const [inventoryImportDialogOpen, setInventoryImportDialogOpen] =
@@ -532,6 +538,7 @@ export function AdminConsole() {
   const [codeBatchSubmitting, setCodeBatchSubmitting] = useState(false)
   const [passwordSubmitting, setPasswordSubmitting] = useState(false)
   const [adsSubmitting, setAdsSubmitting] = useState(false)
+  const [faqSubmitting, setFaqSubmitting] = useState(false)
   const [generatedCodes, setGeneratedCodes] = useState<RedeemCodeItem[]>([])
   const [inventoryFilters, setInventoryFilters] = useState<InventoryFilters>({
     typeId: "",
@@ -613,6 +620,7 @@ export function AdminConsole() {
     setTokenInput("")
     setOverview(null)
     setAdSlot(null)
+    setFaq(null)
     setTypes([])
     setInventory(null)
     setCodes(null)
@@ -675,6 +683,21 @@ export function AdminConsole() {
       handleApiError(error, "广告位配置加载失败")
     } finally {
       setAdsLoading(false)
+    }
+  }
+
+  async function loadFaq(activeToken = token) {
+    if (!activeToken) {
+      return
+    }
+
+    setFaqLoading(true)
+    try {
+      setFaq(await fetchAdminFaq(activeToken))
+    } catch (error) {
+      handleApiError(error, "FAQ 配置加载失败")
+    } finally {
+      setFaqLoading(false)
     }
   }
 
@@ -773,6 +796,7 @@ export function AdminConsole() {
     await Promise.all([
       loadOverviewAndTypes(activeToken),
       loadAds(activeToken),
+      loadFaq(activeToken),
       loadInventory(activeToken),
       loadCodes(activeToken),
       loadRecords(activeToken),
@@ -817,6 +841,7 @@ export function AdminConsole() {
         const [
           nextOverview,
           nextAds,
+          nextFaq,
           nextTypes,
           nextInventory,
           nextCodes,
@@ -825,6 +850,7 @@ export function AdminConsole() {
           await Promise.all([
             fetchAdminOverview(storedToken),
             fetchAdminAds(storedToken),
+            fetchAdminFaq(storedToken),
             fetchAdminTypes(storedToken),
             fetchAdminInventory(storedToken, {
               page: 1,
@@ -846,6 +872,7 @@ export function AdminConsole() {
         setTokenInput(storedToken)
         setOverview(nextOverview)
         setAdSlot(nextAds)
+        setFaq(nextFaq)
         setTypes(nextTypes)
         setInventory(nextInventory)
         setCodes(nextCodes)
@@ -986,6 +1013,24 @@ export function AdminConsole() {
       handleApiError(error, "广告位配置更新失败")
     } finally {
       setAdsSubmitting(false)
+    }
+  }
+
+  async function handleFaqSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!faq) {
+      return
+    }
+
+    setFaqSubmitting(true)
+    try {
+      const payload = await updateAdminFaq(token, faq.html)
+      setFaq(payload.data)
+      showSuccessToast("FAQ 已更新", payload.message)
+    } catch (error) {
+      handleApiError(error, "FAQ 配置更新失败")
+    } finally {
+      setFaqSubmitting(false)
     }
   }
 
@@ -1783,6 +1828,10 @@ export function AdminConsole() {
               <TabsTrigger value="ads">
                 <TicketIcon />
                 广告位
+              </TabsTrigger>
+              <TabsTrigger value="faq">
+                <FileUpIcon />
+                FAQ 配置
               </TabsTrigger>
               <TabsTrigger value="records">
                 <EyeIcon />
@@ -2646,6 +2695,68 @@ export function AdminConsole() {
                 ) : (
                   <div className="text-sm text-muted-foreground">
                     当前未加载到广告位配置。
+                  </div>
+                )}
+
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="faq">
+            <Card className="border border-border/70 bg-card/88 backdrop-blur">
+              <CardHeader className="border-b border-border/70">
+                <CardAction>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadFaq()}
+                    disabled={faqLoading}
+                  >
+                    <RefreshCcwIcon data-icon="inline-start" />
+                    刷新 FAQ
+                  </Button>
+                </CardAction>
+                <CardTitle>FAQ 配置</CardTitle>
+                <CardDescription>
+                  使用富文本编辑器维护兑换页下方的常见问题说明，保存后前台会按排版渲染显示。
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-5">
+                {faqLoading && !faq ? (
+                  <Skeleton className="mx-auto h-96 w-full max-w-5xl" />
+                ) : faq ? (
+                  <form
+                    className="mx-auto flex w-full max-w-5xl flex-col gap-5"
+                    onSubmit={handleFaqSubmit}
+                  >
+                    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                      <div className="flex flex-col gap-3">
+                        <p className="text-xs text-muted-foreground">编辑</p>
+                        <RichTextEditor
+                          value={faq.html}
+                          onChange={(value) => setFaq({ html: value })}
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-3">
+                        <p className="text-xs text-muted-foreground">预览</p>
+                        <Card className="border border-border/70 bg-background/70">
+                          <CardContent>
+                            <RichTextContent html={faq.html} />
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end">
+                      <Button type="submit" disabled={faqSubmitting}>
+                        {faqSubmitting ? "保存中..." : "保存 FAQ"}
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    当前未加载到 FAQ 配置。
                   </div>
                 )}
               </CardContent>
