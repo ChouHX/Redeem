@@ -216,6 +216,74 @@
     position: relative;
     z-index: 1;
   }
+
+  .cn-toast {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid color-mix(in oklab, var(--border) 86%, var(--primary)) !important;
+    border-radius: 0 !important;
+    background:
+      linear-gradient(180deg, color-mix(in oklab, var(--card) 94%, white), var(--card)) !important;
+    color: var(--card-foreground) !important;
+    box-shadow:
+      0 0 0 1px rgb(15 23 42 / 0.04),
+      0 16px 38px rgb(15 23 42 / 0.1) !important;
+    padding: 0.75rem 0.875rem !important;
+    gap: 0.625rem !important;
+  }
+
+  .cn-toast::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: linear-gradient(180deg, var(--primary), color-mix(in oklab, var(--primary) 45%, var(--border)));
+  }
+
+  .cn-toast [data-title] {
+    font-family: var(--font-heading);
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--foreground);
+  }
+
+  .cn-toast [data-description] {
+    font-size: 0.75rem;
+    line-height: 1.55;
+    color: var(--muted-foreground);
+  }
+
+  .cn-toast :where(svg) {
+    color: var(--primary);
+  }
+
+  .cn-toast-action,
+  .cn-toast-cancel,
+  .cn-toast-close {
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .cn-toast-action {
+    background: var(--primary) !important;
+    color: var(--primary-foreground) !important;
+  }
+
+  .cn-toast-cancel,
+  .cn-toast-close {
+    border: 1px solid var(--border) !important;
+    background: var(--background) !important;
+    color: var(--foreground) !important;
+  }
+
+  .cn-toast[data-type="error"]::before {
+    background: linear-gradient(180deg, var(--destructive), color-mix(in oklab, var(--destructive) 40%, var(--border)));
+  }
+
+  .cn-toast[data-type="error"] :where(svg) {
+    color: var(--destructive);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

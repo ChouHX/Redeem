@@ -1,10 +1,8 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react"
+import { useEffect, useState } from "react"
 import {
-  ArrowDownIcon,
-  ArrowUpIcon,
-  CheckCircle2Icon,
   CopyIcon,
   DownloadIcon,
+  GripVerticalIcon,
   MailIcon,
   RefreshCcwIcon,
   SearchIcon,
@@ -41,12 +39,7 @@ import { ThemeToggle } from "@/components/theme-toggle"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { createTextExportFilename, downloadTextFile } from "@/lib/utils"
-
-type NoticeState = {
-  title: string
-  description: string
-  variant?: "default" | "destructive"
-}
+import { toast } from "sonner"
 
 type ResultLineItem = {
   formatted_line: string
@@ -104,22 +97,31 @@ function splitToolLine(line: string, delimiter: string) {
 
 async function copyTextToClipboard(
   value: string,
-  label: string,
-  setTargetNotice: Dispatch<SetStateAction<NoticeState | null>>
+  label: string
 ) {
   try {
     await navigator.clipboard.writeText(value)
-    setTargetNotice({
-      title: "复制成功",
+    toast.success("复制成功", {
       description: `${label} 已复制到剪贴板`,
     })
   } catch {
-    setTargetNotice({
-      title: "复制失败",
+    toast.error("复制失败", {
       description: "当前浏览器不支持自动复制，请手动复制。",
-      variant: "destructive",
     })
   }
+}
+
+function notify(
+  title: string,
+  description: string,
+  variant: "default" | "destructive" = "default"
+) {
+  if (variant === "destructive") {
+    toast.error(title, { description })
+    return
+  }
+
+  toast.success(title, { description })
 }
 
 function ResultOutputCard({
@@ -131,7 +133,6 @@ function ResultOutputCard({
   itemCount,
   redeemedAt,
   items,
-  setNotice,
   downloadPrefix,
 }: {
   badgeLabel: string
@@ -142,7 +143,6 @@ function ResultOutputCard({
   itemCount: number
   redeemedAt: string
   items: ResultLineItem[]
-  setNotice: Dispatch<SetStateAction<NoticeState | null>>
   downloadPrefix: string
 }) {
   const visibleItems = items.slice(0, MAX_VISIBLE_RESULT_ITEMS)
@@ -152,10 +152,7 @@ function ResultOutputCard({
 
   function handleDownload() {
     downloadTextFile(fullText, createTextExportFilename(downloadPrefix, code))
-    setNotice({
-      title: "下载成功",
-      description: `已下载 ${itemCount} 条结果内容。`,
-    })
+    notify("下载成功", `已下载 ${itemCount} 条结果内容。`)
   }
 
   return (
@@ -175,7 +172,7 @@ function ResultOutputCard({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void copyTextToClipboard(code, "兑换码", setNotice)}
+            onClick={() => void copyTextToClipboard(code, "兑换码")}
           >
             <CopyIcon data-icon="inline-start" />
             复制卡密
@@ -183,7 +180,7 @@ function ResultOutputCard({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void copyTextToClipboard(fullText, "结果内容", setNotice)}
+            onClick={() => void copyTextToClipboard(fullText, "结果内容")}
           >
             <CopyIcon data-icon="inline-start" />
             复制结果
@@ -234,13 +231,11 @@ export function RedeemConsole() {
     TOOL_DEFAULT_OUTPUT_DELIMITER
   )
   const [toolFields, setToolFields] = useState<ToolFieldConfig[]>([])
+  const [draggedToolFieldKey, setDraggedToolFieldKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [exchangeSubmitting, setExchangeSubmitting] = useState(false)
   const [querySubmitting, setQuerySubmitting] = useState(false)
   const [toolCodeSubmitting, setToolCodeSubmitting] = useState(false)
-  const [exchangeNotice, setExchangeNotice] = useState<NoticeState | null>(null)
-  const [queryNotice, setQueryNotice] = useState<NoticeState | null>(null)
-  const [toolNotice, setToolNotice] = useState<NoticeState | null>(null)
 
   const normalizedToolInputLines = toolInput
     .split(/\r?\n/)
@@ -303,11 +298,7 @@ export function RedeemConsole() {
       const nextCatalog = await fetchRedeemCatalog()
       setCatalog(nextCatalog.types)
     } catch (error) {
-      setExchangeNotice({
-        title: "加载失败",
-        description: formatErrorMessage(error),
-        variant: "destructive",
-      })
+      notify("加载失败", formatErrorMessage(error), "destructive")
     } finally {
       setLoading(false)
     }
@@ -331,34 +322,22 @@ export function RedeemConsole() {
     event.preventDefault()
     const nextCode = exchangeCode.trim()
     if (!nextCode) {
-      setExchangeNotice({
-        title: "请输入兑换码",
-        description: "卡密不能为空。",
-        variant: "destructive",
-      })
+      notify("请输入兑换码", "卡密不能为空。", "destructive")
       return
     }
 
     setExchangeSubmitting(true)
-    setExchangeNotice(null)
 
     try {
       const payload = await exchangeRedeemCode(nextCode)
       setExchangeResult(payload.data)
       setExchangeCode("")
       setQueryCode(payload.data.code)
-      setExchangeNotice({
-        title: "兑换成功",
-        description: "邮箱数据已发放，请尽快复制保存。",
-      })
+      notify("兑换成功", "邮箱数据已发放，请尽快复制保存。")
       await loadCatalog()
     } catch (error) {
       setExchangeResult(null)
-      setExchangeNotice({
-        title: "兑换失败",
-        description: formatErrorMessage(error),
-        variant: "destructive",
-      })
+      notify("兑换失败", formatErrorMessage(error), "destructive")
     } finally {
       setExchangeSubmitting(false)
     }
@@ -368,47 +347,39 @@ export function RedeemConsole() {
     event.preventDefault()
     const nextCode = queryCode.trim()
     if (!nextCode) {
-      setQueryNotice({
-        title: "请输入兑换码",
-        description: "订单查询需要兑换码。",
-        variant: "destructive",
-      })
+      notify("请输入兑换码", "订单查询需要兑换码。", "destructive")
       return
     }
 
     setQuerySubmitting(true)
-    setQueryNotice(null)
 
     try {
       const payload = await queryRedeemOrder(nextCode)
       setQueryResult(payload)
-      setQueryNotice({
-        title: "查询成功",
-        description: "已载入该兑换码对应的已兑换订单。",
-      })
+      notify("查询成功", "已载入该兑换码对应的已兑换订单。")
     } catch (error) {
       setQueryResult(null)
-      setQueryNotice({
-        title: "查询失败",
-        description: formatErrorMessage(error),
-        variant: "destructive",
-      })
+      notify("查询失败", formatErrorMessage(error), "destructive")
     } finally {
       setQuerySubmitting(false)
     }
   }
 
-  function moveToolField(key: string, direction: -1 | 1) {
+  function moveToolFieldToTarget(sourceKey: string, targetKey: string) {
+    if (sourceKey === targetKey) {
+      return
+    }
+
     setToolFields((current) => {
-      const index = current.findIndex((field) => field.key === key)
-      const nextIndex = index + direction
-      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) {
+      const sourceIndex = current.findIndex((field) => field.key === sourceKey)
+      const targetIndex = current.findIndex((field) => field.key === targetKey)
+      if (sourceIndex < 0 || targetIndex < 0) {
         return current
       }
 
       const nextFields = [...current]
-      const [target] = nextFields.splice(index, 1)
-      nextFields.splice(nextIndex, 0, target)
+      const [sourceField] = nextFields.splice(sourceIndex, 1)
+      nextFields.splice(targetIndex, 0, sourceField)
       return nextFields
     })
   }
@@ -436,65 +407,49 @@ export function RedeemConsole() {
     setToolSourceDelimiter(TOOL_DEFAULT_SOURCE_DELIMITER)
     setToolOutputDelimiter(TOOL_DEFAULT_OUTPUT_DELIMITER)
     setToolFields([])
-    setToolNotice(null)
+    setDraggedToolFieldKey(null)
   }
 
   async function importToolSourceByCode() {
     const nextCode = toolCode.trim()
     if (!nextCode) {
-      setToolNotice({
-        title: "请输入兑换码",
-        description: "导入原始数据前需要先输入兑换码。",
-        variant: "destructive",
-      })
+      notify("请输入兑换码", "导入原始数据前需要先输入兑换码。", "destructive")
       return
     }
 
     setToolCodeSubmitting(true)
-    setToolNotice(null)
 
     try {
-      const queried = await queryRedeemOrder(nextCode)
-      const importedText = queried.items.map((item) => item.formatted_line).join("\n")
-      setToolInput(importedText)
-      setToolNotice({
-        title: "导入成功",
-        description: `已从已兑换订单导入 ${queried.item_count} 条原始数据。`,
-      })
-      return
-    } catch (queryError) {
-      const queryMessage = formatErrorMessage(queryError)
-      const shouldExchange =
-        queryMessage.includes("尚未兑换") ||
-        queryMessage.includes("暂无订单可查询")
-
-      if (!shouldExchange) {
-        setToolNotice({
-          title: "导入失败",
-          description: queryMessage,
-          variant: "destructive",
-        })
+      try {
+        const queried = await queryRedeemOrder(nextCode)
+        const importedText = queried.items.map((item) => item.formatted_line).join("\n")
+        setToolInput(importedText)
+        notify("导入成功", `已从已兑换订单导入 ${queried.item_count} 条原始数据。`)
         return
-      }
-    }
+      } catch (queryError) {
+        const queryMessage = formatErrorMessage(queryError)
+        const shouldExchange =
+          queryMessage.includes("尚未兑换") ||
+          queryMessage.includes("暂无订单可查询")
 
-    try {
+        if (!shouldExchange) {
+          notify("导入失败", queryMessage, "destructive")
+          return
+        }
+      }
+
       const exchanged = await exchangeRedeemCode(nextCode)
       const importedText = exchanged.data.items
         .map((item) => item.formatted_line)
         .join("\n")
       setToolInput(importedText)
       setQueryCode(exchanged.data.code)
-      setToolNotice({
-        title: "兑换并导入成功",
-        description: `已自动兑换并导入 ${exchanged.data.redeemed_count} 条原始数据。`,
-      })
+      notify(
+        "兑换并导入成功",
+        `已自动兑换并导入 ${exchanged.data.redeemed_count} 条原始数据。`
+      )
     } catch (exchangeError) {
-      setToolNotice({
-        title: "导入失败",
-        description: formatErrorMessage(exchangeError),
-        variant: "destructive",
-      })
+      notify("导入失败", formatErrorMessage(exchangeError), "destructive")
     } finally {
       setToolCodeSubmitting(false)
     }
@@ -502,11 +457,7 @@ export function RedeemConsole() {
 
   function handleToolDownload() {
     if (!toolOutputText.trim()) {
-      setToolNotice({
-        title: "没有可导出内容",
-        description: "请先输入原始数据并选择要输出的字段。",
-        variant: "destructive",
-      })
+      notify("没有可导出内容", "请先输入原始数据并选择要输出的字段。", "destructive")
       return
     }
 
@@ -514,10 +465,7 @@ export function RedeemConsole() {
       toolOutputText,
       createTextExportFilename("redeem_extract", "fields")
     )
-    setToolNotice({
-      title: "导出成功",
-      description: `已导出 ${normalizedToolInputLines.length} 行提取结果。`,
-    })
+    notify("导出成功", `已导出 ${normalizedToolInputLines.length} 行提取结果。`)
   }
 
   return (
@@ -645,25 +593,12 @@ export function RedeemConsole() {
                         onClick={() => {
                           setExchangeCode("")
                           setExchangeResult(null)
-                          setExchangeNotice(null)
                         }}
                       >
                         清空
                       </Button>
                     </div>
                   </form>
-
-                  {exchangeNotice ? (
-                    <Alert variant={exchangeNotice.variant}>
-                      {exchangeNotice.variant === "destructive" ? (
-                        <TicketIcon />
-                      ) : (
-                        <CheckCircle2Icon />
-                      )}
-                      <AlertTitle>{exchangeNotice.title}</AlertTitle>
-                      <AlertDescription>{exchangeNotice.description}</AlertDescription>
-                    </Alert>
-                  ) : null}
                 </CardContent>
               </Card>
 
@@ -677,7 +612,6 @@ export function RedeemConsole() {
                   itemCount={exchangeResult.redeemed_count}
                   redeemedAt={exchangeResult.redeemed_at}
                   items={exchangeResult.items}
-                  setNotice={setExchangeNotice}
                   downloadPrefix="redeem_result"
                 />
               ) : null}
@@ -725,25 +659,12 @@ export function RedeemConsole() {
                         onClick={() => {
                           setQueryCode("")
                           setQueryResult(null)
-                          setQueryNotice(null)
                         }}
                       >
                         清空
                       </Button>
                     </div>
                   </form>
-
-                  {queryNotice ? (
-                    <Alert variant={queryNotice.variant}>
-                      {queryNotice.variant === "destructive" ? (
-                        <SearchIcon />
-                      ) : (
-                        <CheckCircle2Icon />
-                      )}
-                      <AlertTitle>{queryNotice.title}</AlertTitle>
-                      <AlertDescription>{queryNotice.description}</AlertDescription>
-                    </Alert>
-                  ) : null}
                 </CardContent>
               </Card>
 
@@ -757,7 +678,6 @@ export function RedeemConsole() {
                   itemCount={queryResult.item_count}
                   redeemedAt={queryResult.redeemed_at}
                   items={queryResult.items}
-                  setNotice={setQueryNotice}
                   downloadPrefix="redeem_order"
                 />
               ) : null}
@@ -868,6 +788,7 @@ export function RedeemConsole() {
                             value={toolInput}
                             onChange={(event) => setToolInput(event.target.value)}
                             placeholder="每行一条，例如&#10;account@example.com----password----client_id_value----refresh_token_value"
+                            wrap="off"
                             spellCheck={false}
                             className="h-80 resize-none overflow-x-auto overflow-y-auto font-mono text-xs leading-6"
                           />
@@ -915,11 +836,7 @@ export function RedeemConsole() {
                             variant="outline"
                             size="sm"
                             onClick={() =>
-                              void copyTextToClipboard(
-                                toolOutputText,
-                                "提取结果",
-                                setToolNotice
-                              )
+                              void copyTextToClipboard(toolOutputText, "提取结果")
                             }
                             disabled={!toolOutputText.trim()}
                           >
@@ -938,61 +855,45 @@ export function RedeemConsole() {
                           </Button>
                         </div>
                       </div>
-
-                      {toolNotice ? (
-                        <Alert variant={toolNotice.variant}>
-                          {toolNotice.variant === "destructive" ? (
-                            <WrenchIcon />
-                          ) : (
-                            <CheckCircle2Icon />
-                          )}
-                          <AlertTitle>{toolNotice.title}</AlertTitle>
-                          <AlertDescription>{toolNotice.description}</AlertDescription>
-                        </Alert>
-                      ) : null}
                     </div>
                   </div>
 
                   <div className="flex flex-col gap-3 border border-border/70 bg-background/70 px-4 py-4">
                     <p className="text-xs text-muted-foreground">输出字段顺序</p>
-                    <div className="flex flex-col gap-2">
+                    <div className="flex flex-wrap gap-2">
                       {toolFields.length ? (
-                        toolFields.map((field, index) => (
-                          <div
+                        toolFields.map((field) => (
+                          <Badge
                             key={field.key}
-                            className="flex items-center justify-between gap-3 border border-border/70 px-3 py-2"
+                            asChild
+                            variant={field.enabled ? "secondary" : "outline"}
+                            className="px-0 py-0"
                           >
-                            <label className="flex min-w-0 items-center gap-2 text-sm text-foreground">
-                              <input
-                                type="checkbox"
-                                checked={field.enabled}
-                                onChange={(event) =>
-                                  toggleToolField(field.key, event.currentTarget.checked)
+                            <button
+                              type="button"
+                              draggable
+                              key={field.key}
+                              onDragStart={() => setDraggedToolFieldKey(field.key)}
+                              onDragEnd={() => setDraggedToolFieldKey(null)}
+                              onDragOver={(event) => event.preventDefault()}
+                              onDragEnter={() => {
+                                if (draggedToolFieldKey) {
+                                  moveToolFieldToTarget(draggedToolFieldKey, field.key)
                                 }
-                              />
+                              }}
+                              onDrop={() => {
+                                if (draggedToolFieldKey) {
+                                  moveToolFieldToTarget(draggedToolFieldKey, field.key)
+                                }
+                                setDraggedToolFieldKey(null)
+                              }}
+                              onClick={() => toggleToolField(field.key, !field.enabled)}
+                              className="inline-flex items-center gap-2 px-3 py-1.5 text-xs transition-transform duration-150"
+                            >
+                              <GripVerticalIcon data-icon="inline-start" />
                               <span>{field.label}</span>
-                            </label>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="icon-xs"
-                                disabled={index === 0}
-                                onClick={() => moveToolField(field.key, -1)}
-                              >
-                                <ArrowUpIcon />
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="icon-xs"
-                                disabled={index === toolFields.length - 1}
-                                onClick={() => moveToolField(field.key, 1)}
-                              >
-                                <ArrowDownIcon />
-                              </Button>
-                            </div>
-                          </div>
+                            </button>
+                          </Badge>
                         ))
                       ) : (
                         <div className="text-sm text-muted-foreground">

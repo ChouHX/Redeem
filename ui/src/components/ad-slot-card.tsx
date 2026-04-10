@@ -12,6 +12,7 @@ interface AdSlotCardProps {
   description: string;
   imageUrl?: string;
   primaryAction?: AdSlotAction;
+  compact?: boolean;
   className?: string;
 }
 
@@ -20,6 +21,7 @@ export function AdSlotCard({
   description,
   imageUrl,
   primaryAction,
+  compact = false,
   className,
 }: AdSlotCardProps) {
   return (
@@ -46,6 +48,7 @@ export function AdSlotCard({
       <div
         className={cn(
           "group relative overflow-hidden rounded-2xl border border-zinc-200/50 bg-white/80 p-3 shadow-sm transition-all duration-300 hover:shadow-md dark:border-zinc-800/50 dark:bg-zinc-900/60 backdrop-blur-xl",
+          compact && "p-3",
           className
         )}
       >
