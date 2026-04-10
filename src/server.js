@@ -33,6 +33,7 @@ import {
   getRedeemInventoryPaged,
   getRedeemRecordsPaged,
   getSystemConfig,
+  getSystemConfigValue,
   importRedeemInventory,
   redeemByCode,
   setSystemConfigValue,
@@ -68,6 +69,21 @@ const app = express();
 const logger = createLogger("server");
 const frontendIndexPath = path.join(FRONTEND_DIST_DIR, "index.html");
 const hasFrontendIndex = fs.existsSync(frontendIndexPath);
+const DEFAULT_AD_SLOT = {
+  enabled: true,
+  title: "自营发卡推荐",
+  description:
+    "本站同步提供多类数字商品，可直接前往发卡网下单。",
+  items: ["ChatGPT Plus 月卡", "Gemini 年卡", "Team 车位", "Outlook 邮箱"],
+  ticker_text:
+    "自营发卡推荐：ChatGPT Plus 月卡、Gemini 年卡、Team 车位、Outlook 邮箱",
+  image_url: "",
+  image_alt: "广告图",
+  primary_action: {
+    label: "进入发卡网",
+    href: "#"
+  }
+};
 
 app.use(cors());
 app.use(express.json({ limit: "4mb" }));
@@ -97,6 +113,70 @@ function parseBoolean(value, fallback = false) {
   }
 
   return fallback;
+}
+
+function normalizeAdAction(value, fallback = { label: "", href: "" }) {
+  const label = String(value?.label || fallback.label || "").trim();
+  const href = String(value?.href || fallback.href || "").trim();
+  return { label, href };
+}
+
+function normalizeAdSlotValue(value, fallback) {
+  return {
+    enabled: parseBoolean(value?.enabled, Boolean(fallback.enabled)),
+    title: String(value?.title || fallback.title || "").trim(),
+    description: String(value?.description || fallback.description || "").trim(),
+    ticker_text: String(value?.ticker_text || fallback.ticker_text || "").trim(),
+    image_url: String(value?.image_url || fallback.image_url || "").trim(),
+    image_alt: String(value?.image_alt || fallback.image_alt || "").trim(),
+    items: Array.isArray(value?.items)
+      ? value.items
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .slice(0, 6)
+      : Array.isArray(value?.highlights)
+        ? value.highlights
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+            .slice(0, 6)
+        : fallback.items,
+    primary_action: normalizeAdAction(value?.primary_action, fallback.primary_action),
+  };
+}
+
+function normalizeSharedAdSlotValue(value) {
+  if (value?.shared) {
+    return normalizeAdSlotValue(value.shared, DEFAULT_AD_SLOT);
+  }
+
+  if (value?.redeem_top || value?.mail_top) {
+    return normalizeAdSlotValue(
+      value.redeem_top || value.mail_top,
+      DEFAULT_AD_SLOT
+    );
+  }
+
+  return normalizeAdSlotValue(value, DEFAULT_AD_SLOT);
+}
+
+function getAdSlotConfig() {
+  const rawValue =
+    getSystemConfigValue("ad_slot") || getSystemConfigValue("ad_slots");
+  if (!rawValue) {
+    return normalizeSharedAdSlotValue(DEFAULT_AD_SLOT);
+  }
+
+  try {
+    return normalizeSharedAdSlotValue(JSON.parse(rawValue));
+  } catch {
+    return normalizeSharedAdSlotValue(DEFAULT_AD_SLOT);
+  }
+}
+
+function saveAdSlotConfig(value) {
+  const normalized = normalizeSharedAdSlotValue(value);
+  setSystemConfigValue("ad_slot", JSON.stringify(normalized));
+  return normalized;
 }
 
 function sendFrontendIndex(res) {
@@ -510,6 +590,10 @@ app.post("/api/admin/password", requireAdmin, (req, res) => {
   res.json(ok({ token: nextToken }, "管理密码修改成功"));
 });
 
+app.get("/api/ui/ads", (_, res) => {
+  res.json(ok(getAdSlotConfig(), "广告位配置获取成功"));
+});
+
 app.get("/api/system/config", requireAdmin, (_, res) => {
   res.json(ok(getSystemConfig()));
 });
@@ -522,6 +606,15 @@ app.post("/api/system/config", requireAdmin, (req, res) => {
   }
   setSystemConfigValue("email_limit", emailLimit);
   res.json(ok(null, `系统配置更新成功，邮件限制设置为 ${emailLimit}`));
+});
+
+app.get("/api/system/ads", requireAdmin, (_, res) => {
+  res.json(ok(getAdSlotConfig(), "广告位配置获取成功"));
+});
+
+app.post("/api/system/ads", requireAdmin, (req, res) => {
+  const adSlot = saveAdSlotConfig(req.body || {});
+  res.json(ok(adSlot, "广告位配置更新成功"));
 });
 
 app.post("/api/test-email", requireAdmin, async (req, res) => {

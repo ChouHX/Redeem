@@ -12,6 +12,7 @@ import {
 
 import {
   accessMailboxByCode,
+  type AdSlotConfig,
   ApiError,
   type MailAddress,
   type MailFolder,
@@ -21,11 +22,13 @@ import {
   type RedeemAccessResult,
   type RedeemedItem,
   type TempMailAccount,
+  fetchPublicAds,
   fetchMailboxMessageDetail,
   fetchMailboxMessages,
   fetchTempMailboxMessageDetail,
   fetchTempMailboxMessages,
 } from "@/lib/api"
+import { AdSlotCard } from "@/components/ad-slot-card"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -506,6 +509,7 @@ function InfoHint({ description }: { description: string }) {
 }
 
 export function MailConsole() {
+  const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
   const [code, setCode] = useState("")
   const [activeFolder, setActiveFolder] = useState<MailFolder>("inbox")
   const [currentEmail, setCurrentEmail] = useState("")
@@ -559,6 +563,16 @@ export function MailConsole() {
     } catch {
       sessionStorage.removeItem(TEMP_ACCOUNT_STORAGE_KEY)
     }
+  }, [])
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setAdSlot(await fetchPublicAds())
+      } catch {
+        setAdSlot(null)
+      }
+    })()
   }, [])
 
   const mailboxes = useMemo(
@@ -1198,20 +1212,38 @@ export function MailConsole() {
     <main className="page-shell page-shell-mail relative h-svh overflow-hidden font-sans">
       <div className="redeem-noise pointer-events-none absolute inset-0 opacity-60" />
       <div className="relative mx-auto flex h-full w-full max-w-7xl flex-col gap-4 px-4 py-4 md:px-6 lg:px-8">
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-4">
-          <div className="flex items-start gap-2">
-            <h1 className="mt-1 text-lg text-foreground">
-              Mail Inbox
-            </h1>
-            <InfoHint description="顶部按钮用于管理邮箱数据：兑换码会导入该卡密对应的邮箱数据，账户列表用于查看和切换已载入的数据，临时账户可手动导入整行账号配置，刷新会重新拉取当前邮箱当前文件夹的邮件。" />
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <ThemeToggle />
-            <Button variant="outline" size="sm" asChild>
-              <a href="/redeem">兑换页</a>
-            </Button>
+        <header className="border-b border-border/70 pb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-2">
+              <h1 className="mt-1 text-lg text-foreground">
+                Mail Inbox
+              </h1>
+              <InfoHint description="顶部按钮用于管理邮箱数据：兑换码会导入该卡密对应的邮箱数据，账户列表用于查看和切换已载入的数据，临时账户可手动导入整行账号配置，刷新会重新拉取当前邮箱当前文件夹的邮件。" />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <ThemeToggle />
+              <Button variant="outline" size="sm" asChild>
+                <a href="/redeem">兑换页</a>
+              </Button>
+            </div>
           </div>
         </header>
+
+        {adSlot?.enabled ? (
+          <AdSlotCard
+            title={adSlot.title}
+            description={adSlot.description}
+            imageUrl={adSlot.image_url}
+            primaryAction={
+              adSlot.primary_action.href
+                ? {
+                    label: adSlot.primary_action.label,
+                    href: adSlot.primary_action.href,
+                  }
+                : undefined
+            }
+          />
+        ) : null}
 
         <section className="grid min-h-0 flex-1 lg:grid-cols-[22rem_minmax(0,1fr)]">
           <Card className="gap-0 hidden min-h-0 border border-border/70 bg-card/92 backdrop-blur lg:flex lg:flex-col">

@@ -68,6 +68,19 @@ export type TempMailAccount = {
   refresh_token: string
 }
 
+export type AdSlotAction = {
+  label: string
+  href: string
+}
+
+export type AdSlotConfig = {
+  enabled: boolean
+  title: string
+  description: string
+  image_url: string
+  primary_action: AdSlotAction
+}
+
 export type RedeemAccessResult = {
   source: "newly_redeemed" | "existing"
   code: string
@@ -412,6 +425,13 @@ export async function fetchRedeemCatalog() {
   return payload.data
 }
 
+export async function fetchPublicAds() {
+  const payload = await apiRequest<AdSlotConfig>("/api/ui/ads", {
+    method: "GET",
+  })
+  return payload.data
+}
+
 export async function exchangeRedeemCode(code: string) {
   const payload = await apiRequest<RedeemExchangeResult>(
     "/api/redeem/exchange",
@@ -565,6 +585,23 @@ export async function fetchAdminOverview(token: string) {
     }
   )
   return payload.data
+}
+
+export async function fetchAdminAds(token: string) {
+  const payload = await apiRequest<AdSlotConfig>("/api/system/ads", {
+    method: "GET",
+    token,
+  })
+  return payload.data
+}
+
+export async function updateAdminAds(token: string, body: AdSlotConfig) {
+  const payload = await apiRequest<AdSlotConfig>("/api/system/ads", {
+    method: "POST",
+    token,
+    body,
+  })
+  return payload
 }
 
 export async function fetchAdminTypes(token: string, includeInactive = true) {

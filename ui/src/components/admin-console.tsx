@@ -20,6 +20,7 @@ import {
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
+  type AdSlotConfig,
   ApiError,
   type AdminOverview,
   type FieldSchema,
@@ -31,6 +32,7 @@ import {
   batchDeleteAdminInventory,
   exportAdminCodesText,
   exportAdminInventoryText,
+  fetchAdminAds,
   type RedeemCodeItem,
   type RedeemInventoryItem,
   type RedeemRecordDetail,
@@ -51,10 +53,12 @@ import {
   importAdminInventory,
   updateAdminCodeStatus,
   updateAdminInventoryStatus,
+  updateAdminAds,
   updateAdminPassword,
   updateAdminType,
   verifyAdminToken,
 } from "@/lib/api"
+import { AdSlotCard } from "@/components/ad-slot-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -370,6 +374,123 @@ function SectionPager({
   )
 }
 
+function AdSlotEditorCard({
+  slot,
+  onEnabledChange,
+  onFieldChange,
+  onActionChange,
+}: {
+  slot: AdSlotConfig
+  onEnabledChange: (enabled: boolean) => void
+  onFieldChange: (
+    key:
+      | "title"
+      | "description"
+      | "image_url",
+    value: string | string[]
+  ) => void
+  onActionChange: (
+    actionKey: "primary_action",
+    field: "label" | "href",
+    value: string
+  ) => void
+}) {
+  return (
+    <Card className="mx-auto w-full max-w-3xl border border-border/70 bg-background/70">
+      <CardHeader className="border-b border-border/70">
+        <CardTitle>共享广告位</CardTitle>
+        <CardDescription>兑换页与收件页共用同一份广告配置</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        <div className="flex flex-col gap-4">
+          <div className="rounded-none border border-border/70 bg-muted/20 px-3 py-2 text-sm text-foreground">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={slot.enabled}
+                onChange={(event) => onEnabledChange(event.currentTarget.checked)}
+              />
+              启用共享广告位
+            </label>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field>
+              <FieldLabel>标题</FieldLabel>
+              <FieldContent>
+                <Input
+                  value={slot.title}
+                  onChange={(event) => onFieldChange("title", event.target.value)}
+                />
+              </FieldContent>
+            </Field>
+            <Field>
+              <FieldLabel>主按钮文案</FieldLabel>
+              <FieldContent>
+                <Input
+                  value={slot.primary_action.label}
+                  onChange={(event) =>
+                    onActionChange("primary_action", "label", event.target.value)
+                  }
+                />
+              </FieldContent>
+            </Field>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field>
+              <FieldLabel>图片 / 动图 URL</FieldLabel>
+              <FieldContent>
+                <Input
+                  value={slot.image_url}
+                  onChange={(event) => onFieldChange("image_url", event.target.value)}
+                  placeholder="例如 /ads/redeem.gif 或 https://..."
+                />
+              </FieldContent>
+            </Field>
+            <Field>
+              <FieldLabel>主按钮链接</FieldLabel>
+              <FieldContent>
+                <Input
+                  value={slot.primary_action.href}
+                  onChange={(event) =>
+                    onActionChange("primary_action", "href", event.target.value)
+                  }
+                />
+              </FieldContent>
+            </Field>
+          </div>
+
+          <Field>
+            <FieldLabel>描述</FieldLabel>
+            <FieldContent>
+              <Textarea
+                rows={3}
+                value={slot.description}
+                onChange={(event) => onFieldChange("description", event.target.value)}
+              />
+            </FieldContent>
+          </Field>
+
+        </div>
+
+        <Separator />
+
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-muted-foreground">预览</p>
+          <AdSlotCard
+            title={slot.title}
+            description={slot.description}
+            imageUrl={slot.image_url}
+            primaryAction={slot.primary_action.href ? slot.primary_action : undefined}
+            compact
+          />
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function AdminConsole() {
   const [token, setToken] = useState("")
   const [tokenInput, setTokenInput] = useState("")
@@ -377,6 +498,7 @@ export function AdminConsole() {
   const [checkingAuth, setCheckingAuth] = useState(true)
   const [activeTab, setActiveTab] = useState("inventory")
   const [overview, setOverview] = useState<AdminOverview | null>(null)
+  const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
   const [types, setTypes] = useState<RedeemType[]>([])
   const [inventory, setInventory] =
     useState<PagedResult<RedeemInventoryItem> | null>(null)
@@ -388,6 +510,7 @@ export function AdminConsole() {
   const [codesLoading, setCodesLoading] = useState(false)
   const [recordsLoading, setRecordsLoading] = useState(false)
   const [overviewLoading, setOverviewLoading] = useState(false)
+  const [adsLoading, setAdsLoading] = useState(false)
   const [typeDialogOpen, setTypeDialogOpen] = useState(false)
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false)
   const [inventoryImportDialogOpen, setInventoryImportDialogOpen] =
@@ -408,6 +531,7 @@ export function AdminConsole() {
   const [codeSubmitting, setCodeSubmitting] = useState(false)
   const [codeBatchSubmitting, setCodeBatchSubmitting] = useState(false)
   const [passwordSubmitting, setPasswordSubmitting] = useState(false)
+  const [adsSubmitting, setAdsSubmitting] = useState(false)
   const [generatedCodes, setGeneratedCodes] = useState<RedeemCodeItem[]>([])
   const [inventoryFilters, setInventoryFilters] = useState<InventoryFilters>({
     typeId: "",
@@ -488,6 +612,7 @@ export function AdminConsole() {
     setToken("")
     setTokenInput("")
     setOverview(null)
+    setAdSlot(null)
     setTypes([])
     setInventory(null)
     setCodes(null)
@@ -535,6 +660,21 @@ export function AdminConsole() {
       handleApiError(error, "概览加载失败")
     } finally {
       setOverviewLoading(false)
+    }
+  }
+
+  async function loadAds(activeToken = token) {
+    if (!activeToken) {
+      return
+    }
+
+    setAdsLoading(true)
+    try {
+      setAdSlot(await fetchAdminAds(activeToken))
+    } catch (error) {
+      handleApiError(error, "广告位配置加载失败")
+    } finally {
+      setAdsLoading(false)
     }
   }
 
@@ -632,6 +772,7 @@ export function AdminConsole() {
   async function refreshDashboard(activeToken = token) {
     await Promise.all([
       loadOverviewAndTypes(activeToken),
+      loadAds(activeToken),
       loadInventory(activeToken),
       loadCodes(activeToken),
       loadRecords(activeToken),
@@ -673,9 +814,17 @@ export function AdminConsole() {
       setCheckingAuth(true)
       try {
         await verifyAdminToken(storedToken)
-        const [nextOverview, nextTypes, nextInventory, nextCodes, nextRecords] =
+        const [
+          nextOverview,
+          nextAds,
+          nextTypes,
+          nextInventory,
+          nextCodes,
+          nextRecords,
+        ] =
           await Promise.all([
             fetchAdminOverview(storedToken),
+            fetchAdminAds(storedToken),
             fetchAdminTypes(storedToken),
             fetchAdminInventory(storedToken, {
               page: 1,
@@ -696,6 +845,7 @@ export function AdminConsole() {
         setToken(storedToken)
         setTokenInput(storedToken)
         setOverview(nextOverview)
+        setAdSlot(nextAds)
         setTypes(nextTypes)
         setInventory(nextInventory)
         setCodes(nextCodes)
@@ -773,6 +923,70 @@ export function AdminConsole() {
       ...current,
       [key]: value,
     }))
+  }
+
+  function updateAdSlotField(
+    key:
+      | "title"
+      | "description"
+      | "image_url",
+    value: string | string[]
+  ) {
+    setAdSlot((current) =>
+      current
+        ? {
+            ...current,
+            [key]: value,
+          }
+        : current
+    )
+  }
+
+  function updateAdSlotEnabled(enabled: boolean) {
+    setAdSlot((current) =>
+      current
+        ? {
+            ...current,
+            enabled,
+          }
+        : current
+    )
+  }
+
+  function updateAdSlotActionField(
+    actionKey: "primary_action",
+    field: "label" | "href",
+    value: string
+  ) {
+    setAdSlot((current) =>
+      current
+        ? {
+            ...current,
+            [actionKey]: {
+              ...current[actionKey],
+              [field]: value,
+            },
+          }
+        : current
+    )
+  }
+
+  async function handleAdSlotsSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!adSlot) {
+      return
+    }
+
+    setAdsSubmitting(true)
+    try {
+      const payload = await updateAdminAds(token, adSlot)
+      setAdSlot(payload.data)
+      showSuccessToast("广告位已更新", payload.message)
+    } catch (error) {
+      handleApiError(error, "广告位配置更新失败")
+    } finally {
+      setAdsSubmitting(false)
+    }
   }
 
   async function handleTypeSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -1565,6 +1779,10 @@ export function AdminConsole() {
               <TabsTrigger value="codes">
                 <KeyRoundIcon />
                 卡密管理
+              </TabsTrigger>
+              <TabsTrigger value="ads">
+                <TicketIcon />
+                广告位
               </TabsTrigger>
               <TabsTrigger value="records">
                 <EyeIcon />
@@ -2385,6 +2603,51 @@ export function AdminConsole() {
                     void loadCodes(undefined, { page: codeFilters.page + 1 })
                   }
                 />
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="ads">
+            <Card className="border border-border/70 bg-card/88 backdrop-blur">
+              <CardHeader className="border-b border-border/70">
+                <CardAction>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadAds()}
+                    disabled={adsLoading}
+                  >
+                    <RefreshCcwIcon data-icon="inline-start" />
+                    刷新广告位
+                  </Button>
+                </CardAction>
+                <CardTitle>广告位配置</CardTitle>
+                <CardDescription>
+                  配置兑换页和收件页的自营商品推荐卡内容。建议直接写你发卡网的商品和入口，不要堆太多标签或复杂营销话术。
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-5">
+                {adsLoading && !adSlot ? (
+                  <Skeleton className="h-96 w-full" />
+                ) : adSlot ? (
+                  <form className="flex flex-col gap-5" onSubmit={handleAdSlotsSubmit}>
+                    <AdSlotEditorCard
+                      slot={adSlot}
+                      onEnabledChange={updateAdSlotEnabled}
+                      onFieldChange={updateAdSlotField}
+                      onActionChange={updateAdSlotActionField}
+                    />
+                    <div className="flex justify-end">
+                      <Button type="submit" disabled={adsSubmitting}>
+                        {adsSubmitting ? "保存中..." : "保存广告位"}
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    当前未加载到广告位配置。
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

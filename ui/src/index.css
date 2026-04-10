@@ -181,4 +181,62 @@
     width: 100%;
     min-height: 100%;
   }
+
+  .ad-slot-card {
+    position: relative;
+    overflow: hidden;
+    border-color: color-mix(in oklab, var(--primary) 30%, var(--border));
+    background:
+      radial-gradient(circle at top right, rgb(249 115 22 / 0.16), transparent 26%),
+      linear-gradient(135deg, rgb(13 148 136 / 0.11), transparent 44%),
+      linear-gradient(180deg, rgb(255 255 255 / 0.92), rgb(255 255 255 / 0.98));
+    box-shadow:
+      0 0 0 1px rgb(13 148 136 / 0.06),
+      0 18px 40px rgb(15 23 42 / 0.08);
+  }
+
+  .ad-slot-card::before {
+    content: "";
+    position: absolute;
+    inset: -35%;
+    background: radial-gradient(circle, rgb(255 255 255 / 0.32), transparent 55%);
+    animation: ad-slot-pulse 4.6s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  .ad-slot-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid rgb(249 115 22 / 0.18);
+    pointer-events: none;
+  }
+
+  .ad-slot-card > * {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ad-slot-card::before {
+    animation: none;
+  }
+}
+
+@keyframes ad-slot-pulse {
+  0% {
+    transform: translate3d(-6%, -4%, 0) scale(0.96);
+    opacity: 0.3;
+  }
+
+  50% {
+    transform: translate3d(4%, 2%, 0) scale(1.02);
+    opacity: 0.72;
+  }
+
+  100% {
+    transform: translate3d(-6%, -4%, 0) scale(0.96);
+    opacity: 0.3;
+  }
 }
