@@ -1232,8 +1232,8 @@ export function createRedeemCodes({
     throw new Error("兑换类型不存在");
   }
 
-  const safeCount = clampPositiveInt(count, 1, 500);
-  const safeQuantity = clampPositiveInt(quantity, 1, 500);
+  const safeCount = clampPositiveInt(count, 1);
+  const safeQuantity = clampPositiveInt(quantity, 1);
   const tx = db.transaction((targetType, amount, nextQuantity, nextNote, nextExpiresAt) => {
     const created = [];
     const insertStmt = db.prepare(

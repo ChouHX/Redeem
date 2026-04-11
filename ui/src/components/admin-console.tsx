@@ -1435,12 +1435,8 @@ export function AdminConsole() {
 
     if (hasQuantity) {
       const parsedQuantity = Number(quantityText)
-      if (
-        !Number.isInteger(parsedQuantity) ||
-        parsedQuantity < 1 ||
-        parsedQuantity > 500
-      ) {
-        showErrorToast("数量不合法", "卡密可兑数量需为 1 到 500 的整数。")
+      if (!Number.isInteger(parsedQuantity) || parsedQuantity < 1) {
+        showErrorToast("数量不合法", "卡密可兑数量需为大于 0 的整数。")
         return
       }
     }
@@ -3387,7 +3383,7 @@ export function AdminConsole() {
                       placeholder="留空则保持不变"
                     />
                     <FieldDescription>
-                      仅支持未兑换卡密，范围为 1 到 500。
+                      仅支持未兑换卡密，必须为大于 0 的整数。
                     </FieldDescription>
                   </FieldContent>
                 </Field>

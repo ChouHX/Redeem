@@ -1128,8 +1128,8 @@ app.post("/api/redeem/admin/codes/generate", requireAdmin, (req, res) => {
   try {
     const codes = createRedeemCodes({
       type_id: typeId,
-      count: parseBoundedInt(req.body?.count, 1, { min: 1, max: 500 }),
-      quantity: parseBoundedInt(req.body?.quantity, 1, { min: 1, max: 500 }),
+      count: parseBoundedInt(req.body?.count, 1, { min: 1 }),
+      quantity: parseBoundedInt(req.body?.quantity, 1, { min: 1 }),
       note: String(req.body?.note || ""),
       expires_at: normalizeExpiresAt(req.body?.expires_at)
     });
@@ -1228,9 +1228,9 @@ app.post("/api/redeem/admin/codes/batch-update", requireAdmin, (req, res) => {
     return;
   }
 
-  const quantity = parseOptionalBoundedInt(req.body?.quantity, { min: 1, max: 500 });
+  const quantity = parseOptionalBoundedInt(req.body?.quantity, { min: 1 });
   if (hasBodyValue(req.body?.quantity) && !quantity) {
-    res.status(400).json(fail("卡密可兑数量需为 1 到 500 的整数"));
+    res.status(400).json(fail("卡密可兑数量需为大于 0 的整数"));
     return;
   }
 
