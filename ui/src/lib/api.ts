@@ -709,6 +709,70 @@ export async function importAdminInventory(
   return payload
 }
 
+export async function importAdminInventoryFile(
+  token: string,
+  body: {
+    type_id: number
+    mode: string
+    file: File
+  },
+  options: {
+    onUploadProgress?: (progress: number) => void
+    onPhaseChange?: (phase: "uploading" | "processing") => void
+  } = {}
+) {
+  const formData = new FormData()
+  formData.set("type_id", String(body.type_id))
+  formData.set("mode", body.mode)
+  formData.set("file", body.file)
+
+  return await new Promise<ApiEnvelope<InventoryImportResult>>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", "/api/redeem/admin/inventory/import", true)
+
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    }
+
+    xhr.upload.onprogress = (event) => {
+      options.onPhaseChange?.("uploading")
+      if (event.lengthComputable) {
+        options.onUploadProgress?.(
+          Math.max(1, Math.min(95, Math.round((event.loaded / event.total) * 90)))
+        )
+      }
+    }
+
+    xhr.upload.onload = () => {
+      options.onPhaseChange?.("processing")
+      options.onUploadProgress?.(95)
+    }
+
+    xhr.onerror = () => {
+      reject(new ApiError("上传失败，请稍后重试", 0, null))
+    }
+
+    xhr.onload = () => {
+      const payload = JSON.parse(xhr.responseText || "null") as ApiEnvelope<InventoryImportResult> | null
+      if (xhr.status >= 200 && xhr.status < 300 && payload?.success) {
+        options.onUploadProgress?.(100)
+        resolve(payload)
+        return
+      }
+
+      reject(
+        new ApiError(
+          payload?.message || `请求失败 (${xhr.status})`,
+          xhr.status,
+          payload
+        )
+      )
+    }
+
+    xhr.send(formData)
+  })
+}
+
 export async function deleteAdminInventory(token: string, inventoryId: number) {
   const payload = await apiRequest<{ inventory_id: number }>(
     `/api/redeem/admin/inventory/${inventoryId}`,

@@ -53,6 +53,7 @@ import {
   fetchAdminTypes,
   generateAdminCodes,
   importAdminInventory,
+  importAdminInventoryFile,
   updateAdminCodeStatus,
   updateAdminInventoryStatus,
   updateAdminAds,
@@ -290,10 +291,6 @@ function codeStatusLabel(status: RedeemCodeItem["derived_status"]) {
     default:
       return status
   }
-}
-
-async function readTextFile(file: File) {
-  return await file.text()
 }
 
 function SectionPager({
@@ -565,6 +562,9 @@ export function AdminConsole() {
   const [inventoryImportTypeId, setInventoryImportTypeId] = useState("")
   const [inventoryImportMode, setInventoryImportMode] = useState("append")
   const [inventoryImportText, setInventoryImportText] = useState("")
+  const [inventoryImportFile, setInventoryImportFile] = useState<File | null>(null)
+  const [inventoryImportProgress, setInventoryImportProgress] = useState<number | null>(null)
+  const [inventoryImportPhase, setInventoryImportPhase] = useState<"uploading" | "processing" | null>(null)
   const [inventoryBatchEdit, setInventoryBatchEdit] =
     useState<InventoryBatchEditState>({
       typeId: "",
@@ -626,6 +626,9 @@ export function AdminConsole() {
     setCodes(null)
     setRecords(null)
     setGeneratedCodes([])
+    setInventoryImportFile(null)
+    setInventoryImportProgress(null)
+    setInventoryImportPhase(null)
     setSelectedInventoryIds([])
     setSelectedCodeIds([])
     showToast("会话已结束", message)
@@ -1063,18 +1066,29 @@ export function AdminConsole() {
       return
     }
 
-    if (!inventoryImportText.trim()) {
-      showErrorToast("请输入库存文本", "每行一条邮箱数据，按类型字段顺序导入。")
+    if (!inventoryImportText.trim() && !inventoryImportFile) {
+      showErrorToast("请输入库存文本", "请粘贴库存文本，或直接上传文件后由后端解析。")
       return
     }
 
     setInventorySubmitting(true)
+    setInventoryImportProgress(inventoryImportFile ? 0 : null)
+    setInventoryImportPhase(inventoryImportFile ? "uploading" : null)
     try {
-      const payload = await importAdminInventory(token, {
-        type_id: Number(inventoryImportTypeId),
-        mode: inventoryImportMode,
-        text: inventoryImportText,
-      })
+      const payload = inventoryImportFile
+        ? await importAdminInventoryFile(token, {
+            type_id: Number(inventoryImportTypeId),
+            mode: inventoryImportMode,
+            file: inventoryImportFile,
+          }, {
+            onUploadProgress: setInventoryImportProgress,
+            onPhaseChange: setInventoryImportPhase,
+          })
+        : await importAdminInventory(token, {
+            type_id: Number(inventoryImportTypeId),
+            mode: inventoryImportMode,
+            text: inventoryImportText,
+          })
       const parseErrors = payload.data.parse.errors.slice(0, 3).join("；")
       showSuccessToast(
         "库存导入完成",
@@ -1084,6 +1098,12 @@ export function AdminConsole() {
       )
       setInventoryImportDialogOpen(false)
       setInventoryImportText("")
+      setInventoryImportFile(null)
+      setInventoryImportProgress(null)
+      setInventoryImportPhase(null)
+      if (inventoryImportFileInputRef.current) {
+        inventoryImportFileInputRef.current.value = ""
+      }
       await Promise.all([
         loadOverviewAndTypes(),
         loadInventory(undefined, { page: 1 }),
@@ -1091,6 +1111,8 @@ export function AdminConsole() {
     } catch (error) {
       handleApiError(error, "库存导入失败")
     } finally {
+      setInventoryImportProgress(null)
+      setInventoryImportPhase(null)
       setInventorySubmitting(false)
     }
   }
@@ -1503,27 +1525,17 @@ export function AdminConsole() {
   }
 
   async function handleImportFileSelection(
-    file: File | undefined,
-    setter: (value: string) => void,
-    label: string
+    file: File | undefined
   ) {
     if (!file) {
       return
     }
 
-    try {
-      const content = await readTextFile(file)
-      setter(content)
-      showSuccessToast(
-        "文件已加载",
-        `${label}文件 ${file.name} 已填充到导入框。`
-      )
-    } catch {
-      showErrorToast(
-        "读取失败",
-        `无法读取 ${file.name}，请检查文件编码或重新选择。`
-      )
-    }
+    setInventoryImportFile(file)
+    showSuccessToast(
+      "文件已选择",
+      `${file.name} 将在提交时由后端直接解析，不会加载到文本框。`
+    )
   }
 
   async function handlePasswordUpdate(event: React.FormEvent<HTMLFormElement>) {
@@ -3168,7 +3180,7 @@ export function AdminConsole() {
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="inventory-import-text">
-                    库存文本
+                    库存文本或文件
                   </FieldLabel>
                   <FieldContent>
                     <div className="flex flex-wrap items-center gap-2">
@@ -3179,9 +3191,7 @@ export function AdminConsole() {
                         className="hidden"
                         onChange={(event) => {
                           void handleImportFileSelection(
-                            event.currentTarget.files?.[0],
-                            setInventoryImportText,
-                            "库存导入"
+                            event.currentTarget.files?.[0]
                           )
                           event.currentTarget.value = ""
                         }}
@@ -3197,6 +3207,11 @@ export function AdminConsole() {
                         <FileUpIcon data-icon="inline-start" />
                         上传文件
                       </Button>
+                      {inventoryImportFile ? (
+                        <span className="text-xs text-muted-foreground">
+                          已选择：{inventoryImportFile.name}
+                        </span>
+                      ) : null}
                     </div>
                     <Textarea
                       id="inventory-import-text"
@@ -3208,11 +3223,30 @@ export function AdminConsole() {
                       placeholder="account----password----oauth2id----refreshtoken"
                     />
                     <FieldDescription>
-                      支持多行粘贴；以 <code>#</code> 开头的行会被自动忽略。
+                      支持多行粘贴；也支持上传大文件并由后端直接解析。以 <code>#</code> 开头的行会被自动忽略。
                     </FieldDescription>
                   </FieldContent>
                 </Field>
               </FieldGroup>
+
+              {inventoryImportProgress !== null ? (
+                <div className="flex flex-col gap-2 border border-border/70 bg-background/70 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                    <span>
+                      {inventoryImportPhase === "processing"
+                        ? "服务器处理中..."
+                        : "上传文件中..."}
+                    </span>
+                    <span>{inventoryImportProgress}%</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-none border border-border/70 bg-muted/50">
+                    <div
+                      className="h-full bg-primary transition-[width] duration-200 ease-out"
+                      style={{ width: `${inventoryImportProgress}%` }}
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
             <DialogFooter className="border-t border-border/70 px-5 py-4">
               <Button

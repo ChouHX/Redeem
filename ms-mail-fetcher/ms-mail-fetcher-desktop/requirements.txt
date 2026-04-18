@@ -1,3 +1,0 @@
--r ../ms-mail-fetcher-server/requirements.txt
-PyInstaller==6.19.0
-pywebview>=5.0,<6.0

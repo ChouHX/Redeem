@@ -28,3 +28,5 @@ yarn-error.log*
 .idea/
 .vscode/
 *.local
+
+ms-mail-fetcher

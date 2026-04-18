@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import express from "express";
 import cors from "cors";
+import multer from "multer";
 import {
   ADMIN_PATH,
   CLIENT_ID,
@@ -69,6 +70,12 @@ const app = express();
 const logger = createLogger("server");
 const frontendIndexPath = path.join(FRONTEND_DIST_DIR, "index.html");
 const hasFrontendIndex = fs.existsSync(frontendIndexPath);
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 16 * 1024 * 1024
+  }
+});
 const DEFAULT_AD_SLOT = {
   enabled: true,
   title: "自营发卡推荐",
@@ -927,9 +934,12 @@ app.get("/api/redeem/admin/inventory", requireAdmin, (req, res) => {
   res.json(ok(result, `共 ${result.total} 条库存记录`));
 });
 
-app.post("/api/redeem/admin/inventory/import", requireAdmin, (req, res) => {
+app.post("/api/redeem/admin/inventory/import", requireAdmin, upload.single("file"), (req, res) => {
   const typeId = Number(req.body?.type_id);
-  const text = String(req.body?.text || "").trim();
+  const uploadedText = req.file?.buffer
+    ? req.file.buffer.toString("utf8").replace(/^\uFEFF/, "")
+    : "";
+  const text = String(req.body?.text || uploadedText || "").trim();
   const mode = String(req.body?.mode || "append");
 
   if (!Number.isInteger(typeId) || typeId < 1) {
