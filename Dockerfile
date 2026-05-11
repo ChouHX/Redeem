@@ -11,25 +11,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN corepack enable && corepack prepare pnpm@10.11.1 --activate
 
-# Full workspace install (shared across build stages)
-FROM base AS deps
+# Stage 1: install the full workspace (used to build the UI)
+FROM base AS workspace-deps
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY ui/package.json ui/package.json
 
 RUN pnpm install --frozen-lockfile
 
-# Build the UI
-FROM deps AS frontend-build
+# Stage 2: build the UI
+FROM workspace-deps AS frontend-build
 
 COPY ui ./ui
 RUN pnpm --filter ui run build
 
-# Produce a self-contained, prod-only node_modules for the backend
-FROM deps AS backend-prod
+# Stage 3: build a standalone backend node_modules using npm
+# (workspace-aware pnpm deploy does not play well with the root package,
+# so we install the backend deps from the root package.json directly.)
+FROM base AS backend-prod
 
-COPY src ./src
-RUN pnpm deploy --filter=outlook-manager-node-backend --prod --legacy /app/backend-prod
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
 
 # Final runtime image
 FROM node:20-bookworm-slim
@@ -45,8 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=backend-prod /app/backend-prod/node_modules ./node_modules
-COPY --from=backend-prod /app/backend-prod/package.json ./package.json
+COPY --from=backend-prod /app/node_modules ./node_modules
+COPY package.json ./
 COPY src ./src
 COPY --from=frontend-build /app/ui/dist ./ui/dist
 
