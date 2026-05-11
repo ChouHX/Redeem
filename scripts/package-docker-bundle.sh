@@ -17,10 +17,10 @@ tar \
   docker-compose.yml \
   .dockerignore \
   package.json \
-  package-lock.json \
+  pnpm-lock.yaml \
+  pnpm-workspace.yaml \
   src \
   ui/package.json \
-  ui/package-lock.json \
   ui/components.json \
   ui/vite.config.ts \
   ui/tsconfig.json \
