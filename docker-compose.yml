@@ -12,6 +12,8 @@ services:
       DB_PATH: /app/data/outlook_manager.db
       ADMIN_TOKEN: ${ADMIN_TOKEN:-admin123}
       ADMIN_PATH: ${ADMIN_PATH:-admin}
+      GEMINI_PRO_API_BASE: ${GEMINI_PRO_API_BASE:-https://1688ai.vip}
+      GEMINI_PRO_API_TIMEOUT_MS: ${GEMINI_PRO_API_TIMEOUT_MS:-15000}
       TZ: Asia/Shanghai
     volumes:
       - ./data:/app/data
