@@ -58,3 +58,10 @@ export const IMAP_RESOLVE_INLINE_IMAGES =
 export const MAILPARSER_MAX_HTML_LENGTH = Number(
   process.env.MAILPARSER_MAX_HTML_LENGTH || 262144
 );
+
+export const GEMINI_PRO_API_BASE = String(
+  process.env.GEMINI_PRO_API_BASE || "https://1688ai.vip"
+).replace(/\/+$/, "");
+export const GEMINI_PRO_API_TIMEOUT_MS = Number(
+  process.env.GEMINI_PRO_API_TIMEOUT_MS || 15000
+);

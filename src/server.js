@@ -8,6 +8,8 @@ import {
   CLIENT_ID,
   DEFAULT_EMAIL_LIMIT,
   FRONTEND_DIST_DIR,
+  GEMINI_PRO_API_BASE,
+  GEMINI_PRO_API_TIMEOUT_MS,
   HOST,
   PORT
 } from "./config.js";
@@ -869,11 +871,173 @@ app.post("/api/redeem/exchange", (req, res) => {
   }
 });
 
-app.get("/api/redeem/admin/overview", requireAdmin, (_, res) => {
-  res.json(ok(getRedeemAdminOverview(), "兑换系统概览获取成功"));
+async function callGeminiProUpstream(pathname, { method = "GET", body = null, query = null } = {}) {
+  const search = query
+    ? "?" +
+      Object.entries(query)
+        .filter(([, value]) => value !== undefined && value !== null)
+        .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+        .join("&")
+    : "";
+  const upstreamUrl = `${GEMINI_PRO_API_BASE}${pathname}${search}`;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    GEMINI_PRO_API_TIMEOUT_MS
+  );
+
+  try {
+    const headers = {
+      Accept: "application/json, text/javascript, */*; q=0.01",
+      "X-Requested-With": "XMLHttpRequest"
+    };
+    if (body !== null) {
+      headers["Content-Type"] = "application/json";
+    }
+
+    const upstreamResponse = await fetch(upstreamUrl, {
+      method,
+      headers,
+      body: body === null ? undefined : JSON.stringify(body),
+      signal: controller.signal
+    });
+
+    const bodyText = await upstreamResponse.text();
+    let payload = null;
+    try {
+      payload = bodyText ? JSON.parse(bodyText) : null;
+    } catch {
+      payload = null;
+    }
+
+    return {
+      status: upstreamResponse.status,
+      ok: upstreamResponse.ok,
+      payload
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+app.get("/api/geminipro/tasks/:cardCode", async (req, res) => {
+  const cardCode = String(req.params.cardCode || "").trim();
+  if (!cardCode) {
+    res.status(400).json(fail("请输入卡密"));
+    return;
+  }
+
+  const page = parseBoundedInt(req.query.page, 1, { min: 1, max: 100000 });
+  const pageSize = parseBoundedInt(req.query.page_size, 20, { min: 1, max: 100 });
+
+  try {
+    const response = await callGeminiProUpstream(
+      `/tasks/card/${encodeURIComponent(cardCode)}`,
+      { query: { page, page_size: pageSize } }
+    );
+
+    if (!response.ok) {
+      const message =
+        response.payload?.message || `上游服务返回 ${response.status}`;
+      res.status(response.status === 404 ? 404 : 400).json(fail(message));
+      return;
+    }
+
+    if (response.payload?.success === false) {
+      res.status(400).json(fail(response.payload.message || "查询失败"));
+      return;
+    }
+
+    const data = response.payload?.data || response.payload || {};
+    res.json(ok(data, "任务记录查询成功"));
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      logger.error("api_geminipro_timeout", { cardCode });
+      res.status(504).json(fail("上游服务响应超时，请稍后重试"));
+      return;
+    }
+    logger.error("api_geminipro_failed", { error });
+    res
+      .status(502)
+      .json(fail(`上游服务调用失败: ${error.message || "unknown error"}`));
+  }
 });
 
-app.get("/api/redeem/admin/types", requireAdmin, (req, res) => {
+app.post("/api/geminipro/submit", async (req, res) => {
+  const card = String(req.body?.card || "").trim();
+  const accountsInput = Array.isArray(req.body?.accounts) ? req.body.accounts : [];
+  const accounts = accountsInput
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+
+  if (!card) {
+    res.status(400).json(fail("请输入卡密"));
+    return;
+  }
+
+  if (!accounts.length) {
+    res.status(400).json(fail("请至少提供一组账号"));
+    return;
+  }
+
+  const invalidAccount = accounts.find((line) => line.split("--").length < 3);
+  if (invalidAccount) {
+    res
+      .status(400)
+      .json(fail("账号格式应为：账号--密码--2FA密钥"));
+    return;
+  }
+
+  const payload = {
+    card,
+    accounts,
+    timestamp: new Date().toISOString()
+  };
+
+  try {
+    const response = await callGeminiProUpstream("/tasks/submit", {
+      method: "POST",
+      body: payload
+    });
+
+    if (!response.ok) {
+      const message =
+        response.payload?.message || `上游服务返回 ${response.status}`;
+      res.status(response.status >= 500 ? 502 : 400).json(fail(message));
+      return;
+    }
+
+    if (response.payload?.success === false) {
+      res
+        .status(400)
+        .json(fail(response.payload.message || "任务提交失败"));
+      return;
+    }
+
+    const data = response.payload?.data ?? response.payload ?? null;
+    res.json(
+      ok(
+        data,
+        response.payload?.message || `已提交 ${accounts.length} 条账号`
+      )
+    );
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      logger.error("api_geminipro_submit_timeout", { card });
+      res.status(504).json(fail("上游服务响应超时，请稍后重试"));
+      return;
+    }
+    logger.error("api_geminipro_submit_failed", { error });
+    res
+      .status(502)
+      .json(fail(`上游服务调用失败: ${error.message || "unknown error"}`));
+  }
+});
+
+app.get("/api/redeem/admin/overview", requireAdmin, (_, res) => {
+  res.json(ok(getRedeemAdminOverview(), "兑换系统概览获取成功"));
+});app.get("/api/redeem/admin/types", requireAdmin, (req, res) => {
   const includeInactive = parseBoolean(req.query.include_inactive, false);
   const types = getRedeemEmailTypes({
     include_inactive: includeInactive
