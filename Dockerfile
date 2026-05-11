@@ -9,21 +9,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-FROM base AS backend-deps
+RUN corepack enable && corepack prepare pnpm@10.11.1 --activate
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# Full workspace install (shared across build stages)
+FROM base AS deps
 
-FROM base AS frontend-build
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY ui/package.json ui/package.json
 
-WORKDIR /app/ui
+RUN pnpm install --frozen-lockfile
 
-COPY ui/package.json ui/package-lock.json ./
-RUN npm ci
+# Build the UI
+FROM deps AS frontend-build
 
-COPY ui ./
-RUN npm run build
+COPY ui ./ui
+RUN pnpm --filter ui run build
 
+# Produce a self-contained, prod-only node_modules for the backend
+FROM deps AS backend-prod
+
+COPY src ./src
+RUN pnpm deploy --filter=outlook-manager-node-backend --prod --legacy /app/backend-prod
+
+# Final runtime image
 FROM node:20-bookworm-slim
 
 WORKDIR /app
@@ -37,8 +45,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=backend-deps /app/node_modules ./node_modules
-COPY package.json package-lock.json ./
+COPY --from=backend-prod /app/backend-prod/node_modules ./node_modules
+COPY --from=backend-prod /app/backend-prod/package.json ./package.json
 COPY src ./src
 COPY --from=frontend-build /app/ui/dist ./ui/dist
 
@@ -49,4 +57,4 @@ EXPOSE 5002
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://127.0.0.1:5002/ || exit 1
 
-CMD ["npm", "start"]
+CMD ["node", "src/server.js"]

@@ -4,13 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "npm --prefix ui run build",
-    "dev": "concurrently -k -n server,ui -c blue,magenta \"npm run dev:server\" \"npm run dev:ui\"",
+    "build": "pnpm --filter ui run build",
+    "dev": "concurrently -k -n server,ui -c blue,magenta \"pnpm run dev:server\" \"pnpm run dev:ui\"",
     "dev:server": "node --watch src/server.js",
-    "dev:ui": "npm --prefix ui run dev",
+    "dev:ui": "pnpm --filter ui run dev",
     "package:docker": "bash ./scripts/package-docker-bundle.sh",
-    "ui:dev": "npm --prefix ui run dev",
-    "ui:build": "npm --prefix ui run build",
+    "ui:dev": "pnpm --filter ui run dev",
+    "ui:build": "pnpm --filter ui run build",
     "start": "node src/server.js",
     "test": "node --test"
   },
@@ -25,5 +25,10 @@
     "imapflow": "^1.0.181",
     "mailparser": "^3.7.2",
     "multer": "^2.1.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }

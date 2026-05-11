@@ -30,3 +30,6 @@ yarn-error.log*
 *.local
 
 ms-mail-fetcher
+
+# Local references (not part of the project)
+查询任务卡片记录接口文档.html
