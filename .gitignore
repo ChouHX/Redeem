@@ -1,6 +1,5 @@
 node_modules/
 **/node_modules/
-
 dist/
 **/dist/
 dist-ssr/
@@ -28,8 +27,4 @@ yarn-error.log*
 .idea/
 .vscode/
 *.local
-
-ms-mail-fetcher
-
-# Local references (not part of the project)
-查询任务卡片记录接口文档.html
+.agents/
