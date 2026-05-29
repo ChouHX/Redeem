@@ -122,6 +122,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { toast } from "sonner"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { createTextExportFilename, downloadTextFile } from "@/lib/utils"
+import { copyTextToClipboard, formatDateTime, formatErrorMessage } from "@/lib/shared"
 
 type TypeEditorState = TypeFormPayload
 
@@ -197,37 +198,6 @@ function createTypeEditorState(type?: RedeemType): TypeEditorState {
     is_active: true,
     field_schema: [createDefaultFields()],
   }
-}
-
-function formatErrorMessage(error: unknown) {
-  if (error instanceof ApiError) {
-    return error.message
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return "请求失败，请稍后重试"
-}
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) {
-    return "未记录"
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
 }
 
 function toDatetimeLocal(value: string | null | undefined) {
@@ -642,15 +612,6 @@ export function AdminConsole() {
 
     showErrorToast(title, formatErrorMessage(error))
     return false
-  }
-
-  async function copyText(value: string, label: string) {
-    try {
-      await navigator.clipboard.writeText(value)
-      showSuccessToast("复制成功", `${label} 已复制到剪贴板`)
-    } catch {
-      showErrorToast("复制失败", "当前环境不支持自动复制，请手动复制")
-    }
   }
 
   async function loadOverviewAndTypes(activeToken = token) {
@@ -1850,7 +1811,7 @@ export function AdminConsole() {
 
           <TabsContent value="types">
             <div className="flex flex-col gap-4">
-              <Card className="border border-border/70 bg-card/88 backdrop-blur">
+              <Card className="border border-border/70 bg-card/95">
                 <CardHeader className="border-b border-border/70">
                   <CardAction>
                     <Button size="sm" onClick={openCreateTypeDialog}>
@@ -1930,7 +1891,7 @@ export function AdminConsole() {
           </TabsContent>
 
           <TabsContent value="inventory">
-            <Card className="border border-border/70 bg-card/88 backdrop-blur">
+            <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction className="flex flex-wrap gap-2">
                   <Button
@@ -2155,7 +2116,7 @@ export function AdminConsole() {
                                 variant="outline"
                                 size="xs"
                                 onClick={() =>
-                                  void copyText(
+                                  void copyTextToClipboard(
                                     item.serialized_value,
                                     "库存整行内容"
                                   )
@@ -2201,7 +2162,7 @@ export function AdminConsole() {
                                 <DropdownMenuGroup>
                                   <DropdownMenuItem
                                     onSelect={() => {
-                                      void copyText(
+                                      void copyTextToClipboard(
                                         item.serialized_value,
                                         "库存整行内容"
                                       )
@@ -2275,7 +2236,7 @@ export function AdminConsole() {
           </TabsContent>
 
           <TabsContent value="codes">
-            <Card className="border border-border/70 bg-card/88 backdrop-blur">
+            <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction className="flex flex-wrap gap-2">
                   <Button
@@ -2542,7 +2503,7 @@ export function AdminConsole() {
                                 variant="outline"
                                 size="xs"
                                 onClick={() =>
-                                  void copyText(item.code, "兑换码")
+                                  void copyTextToClipboard(item.code, "兑换码")
                                 }
                               >
                                 <CopyIcon data-icon="inline-start" />
@@ -2599,7 +2560,7 @@ export function AdminConsole() {
                                 <DropdownMenuGroup>
                                   <DropdownMenuItem
                                     onSelect={() => {
-                                      void copyText(item.code, "兑换码")
+                                      void copyTextToClipboard(item.code, "兑换码")
                                     }}
                                   >
                                     复制卡密
@@ -2665,7 +2626,7 @@ export function AdminConsole() {
           </TabsContent>
 
           <TabsContent value="ads">
-            <Card className="border border-border/70 bg-card/88 backdrop-blur">
+            <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction>
                   <Button
@@ -2711,7 +2672,7 @@ export function AdminConsole() {
           </TabsContent>
 
           <TabsContent value="faq">
-            <Card className="border border-border/70 bg-card/88 backdrop-blur">
+            <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction>
                   <Button
@@ -2772,7 +2733,7 @@ export function AdminConsole() {
           </TabsContent>
 
           <TabsContent value="records">
-            <Card className="border border-border/70 bg-card/88 backdrop-blur">
+            <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardTitle>兑换记录</CardTitle>
                 <CardDescription>
@@ -2884,7 +2845,7 @@ export function AdminConsole() {
                                 variant="outline"
                                 size="xs"
                                 onClick={() =>
-                                  void copyText(item.code, "兑换码")
+                                  void copyTextToClipboard(item.code, "兑换码")
                                 }
                               >
                                 <CopyIcon data-icon="inline-start" />
@@ -3095,7 +3056,7 @@ export function AdminConsole() {
                           variant="outline"
                           size="sm"
                           onClick={() =>
-                            void copyText(
+                            void copyTextToClipboard(
                               recordLine(item),
                               `兑换记录第 ${index + 1} 份内容`
                             )

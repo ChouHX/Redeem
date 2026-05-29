@@ -6,6 +6,8 @@ import {
   InboxIcon,
   KeyRoundIcon,
   MailIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
   RefreshCcwIcon,
   SearchIcon,
   ShieldAlertIcon,
@@ -16,7 +18,6 @@ import {
 import {
   accessMailboxByCode,
   type AdSlotConfig,
-  ApiError,
   type MailAddress,
   type MailFolder,
   type MailListResult,
@@ -71,7 +72,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { cn } from "@/lib/utils"
-import { toast } from "sonner"
+import { copyTextToClipboard, formatErrorMessage, notify } from "@/lib/shared"
 
 type TempAccountFormState = {
   email: string
@@ -100,7 +101,7 @@ type RedeemMailboxPageState = {
   page: number
   page_size: number
 }
-type MobileView = "mailboxes" | "messages" | "detail"
+type MobileView = "messages" | "detail"
 
 const TEMP_ACCOUNT_STORAGE_KEY = "tempAccount"
 const DEFAULT_PAGE_SIZE = 10
@@ -115,18 +116,6 @@ const EMPTY_FOLDER_LOADING: FolderLoadingState = {
 const EMPTY_FOLDER_SELECTION: FolderSelectionState = {
   inbox: "",
   spam: "",
-}
-
-function formatErrorMessage(error: unknown) {
-  if (error instanceof ApiError) {
-    return error.message
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return "请求失败，请稍后重试"
 }
 
 function parseAccountLine(rawText: string) {
@@ -467,19 +456,6 @@ function mailboxToTempAccount(mailbox: MailboxEntry): TempMailAccount {
   }
 }
 
-function notify(
-  title: string,
-  description: string,
-  variant: "default" | "destructive" = "default"
-) {
-  if (variant === "destructive") {
-    toast.error(title, { description })
-    return
-  }
-
-  toast.success(title, { description })
-}
-
 function mailboxInitial(mailbox: MailboxEntry) {
   return (mailbox.email || "?").slice(0, 1).toUpperCase()
 }
@@ -519,6 +495,7 @@ export function MailConsole() {
   const [mailboxFilter, setMailboxFilter] = useState("")
   const [messageFilter, setMessageFilter] = useState("")
   const [mobileView, setMobileView] = useState<MobileView>("messages")
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const sidebarScrollRefs = useRef<Record<MailFolder, HTMLDivElement | null>>({
     inbox: null,
     spam: null,
@@ -658,23 +635,6 @@ export function MailConsole() {
       setCurrentEmail(mailboxes[0].email)
     }
   }, [mailboxes, currentEmail])
-
-  async function handleCopy(value: string, label: string) {
-    if (!value) {
-      return
-    }
-
-    try {
-      await navigator.clipboard.writeText(value)
-      notify("复制成功", `${label} 已复制到剪贴板`)
-    } catch {
-      notify(
-        "复制失败",
-        "当前环境不支持自动复制，请手动复制。",
-        "destructive"
-      )
-    }
-  }
 
   function resetRedeemMailboxAccess() {
     setRedeemAccess(null)
@@ -1085,7 +1045,7 @@ export function MailConsole() {
             </button>
           ) : null}
         </div>
-        <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+        <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
           <span>
             {filteredMailboxes.length} / {accountListMailboxes.length} 个邮箱
           </span>
@@ -1093,7 +1053,7 @@ export function MailConsole() {
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 aria-label="上一页"
                 disabled={accountsLoading || redeemMailboxPage.page <= 1}
                 onClick={() =>
@@ -1107,7 +1067,7 @@ export function MailConsole() {
               </span>
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 aria-label="下一页"
                 disabled={
                   accountsLoading || redeemMailboxPage.page >= accountListPageCount
@@ -1157,7 +1117,7 @@ export function MailConsole() {
                           {mailbox.email}
                         </span>
                       </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                         <Badge
                           variant={
                             mailbox.sourceType === "temp" ? "default" : "outline"
@@ -1246,17 +1206,8 @@ export function MailConsole() {
 
   const messagesPanel = (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-border/70 px-3 pt-3 pb-2">
+      <div className="shrink-0 border-b border-border/70 px-3 pt-2 pb-1.5 md:pt-3 md:pb-2">
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="md:hidden"
-            aria-label="返回邮箱列表"
-            onClick={() => setMobileView("mailboxes")}
-          >
-            <ArrowLeftIcon />
-          </Button>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <p className="truncate text-xs font-medium text-foreground">
@@ -1270,7 +1221,7 @@ export function MailConsole() {
                       size="icon-xs"
                       aria-label="复制邮箱"
                       onClick={() =>
-                        void handleCopy(selectedMailbox.email, "邮箱")
+                        void copyTextToClipboard(selectedMailbox.email, "邮箱")
                       }
                     >
                       <CopyIcon />
@@ -1371,7 +1322,7 @@ export function MailConsole() {
         ) : !selectedMailbox ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-muted-foreground">
             <MailIcon className="size-8 text-muted-foreground/60" />
-            <p>从左侧选择一个邮箱开始查看邮件。</p>
+            <p>选择一个邮箱开始查看邮件。</p>
           </div>
         ) : filteredMessages.length ? (
           <ul className="flex flex-col">
@@ -1407,14 +1358,14 @@ export function MailConsole() {
                       <span className="truncate text-xs font-medium text-foreground">
                         {from.name}
                       </span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                      <span className="shrink-0 text-xs text-muted-foreground">
                         {formatMailDate(message.receivedDateTime)}
                       </span>
                     </div>
                     <span className="truncate text-xs text-foreground/90">
                       {message.subject || "(无主题)"}
                     </span>
-                    <span className="line-clamp-2 text-[11px] text-muted-foreground">
+                    <span className="line-clamp-2 text-xs text-muted-foreground">
                       {message.bodyPreview || "暂无摘要"}
                     </span>
                   </button>
@@ -1439,7 +1390,7 @@ export function MailConsole() {
       </div>
 
       {currentMailList ? (
-        <div className="shrink-0 border-t border-border/70 px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="shrink-0 border-t border-border/70 px-3 py-2 text-xs text-muted-foreground">
           <div className="flex items-center justify-between gap-2">
             <span>
               第 {currentMailList.page} /{" "}
@@ -1452,7 +1403,7 @@ export function MailConsole() {
             <div className="flex gap-1">
               <Button
                 variant="outline"
-                size="xs"
+                size="sm"
                 disabled={
                   !selectedMailbox ||
                   activeFolderLoading ||
@@ -1469,7 +1420,7 @@ export function MailConsole() {
               </Button>
               <Button
                 variant="outline"
-                size="xs"
+                size="sm"
                 disabled={
                   !selectedMailbox ||
                   activeFolderLoading ||
@@ -1528,7 +1479,7 @@ export function MailConsole() {
         </div>
       ) : messageDetail ? (
         <article className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="shrink-0 px-6 pt-5 pb-4">
+          <div className="shrink-0 px-4 pt-4 pb-3 md:px-6 md:pt-5 md:pb-4">
             <h2 className="font-heading text-base font-medium tracking-tight text-foreground sm:text-lg">
               {messageDetail.subject || "(无主题)"}
             </h2>
@@ -1545,17 +1496,17 @@ export function MailConsole() {
                       {sender.name}
                     </p>
                     {sender.address && sender.address !== sender.name ? (
-                      <p className="truncate text-[11px] text-muted-foreground">
+                      <p className="truncate text-xs text-muted-foreground">
                         {sender.address}
                       </p>
                     ) : null}
                   </div>
-                  <p className="shrink-0 text-[11px] text-muted-foreground">
+                  <p className="shrink-0 text-xs text-muted-foreground">
                     {formatDetailMailDate(messageDetail.receivedDateTime)}
                   </p>
                 </div>
                 {recipients !== "未知收件人" ? (
-                  <p className="mt-1.5 truncate text-[11px] text-muted-foreground">
+                  <p className="mt-1.5 truncate text-xs text-muted-foreground">
                     发送给 {recipients}
                   </p>
                 ) : null}
@@ -1565,7 +1516,7 @@ export function MailConsole() {
 
           <Separator />
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-5">
             {isHtmlContent ? (
               <MailHtmlContent html={sanitizedBody} />
             ) : (
@@ -1580,7 +1531,7 @@ export function MailConsole() {
           <MailIcon className="size-10 text-muted-foreground/60" />
           <p className="max-w-xs">
             {selectedMailbox
-              ? "从中间列表选择一封邮件查看正文。"
+              ? "选择一封邮件查看正文。"
               : "先载入兑换码或添加临时账户，再选择邮件查看。"}
           </p>
         </div>
@@ -1593,7 +1544,7 @@ export function MailConsole() {
       <div className="redeem-noise pointer-events-none absolute inset-0 opacity-60" />
 
       <header className="relative z-10 shrink-0 border-b border-border/70 bg-background/70 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-[104rem] items-center gap-2 px-3 py-2.5 sm:px-4 md:px-6">
+        <div className="mx-auto flex w-full max-w-[104rem] items-center gap-2 px-3 py-2 sm:px-4 md:py-2.5 md:px-6">
           <div className="flex items-center gap-2">
             <MailIcon className="size-4 text-primary" />
             <span className="font-heading text-sm font-medium">Mail</span>
@@ -1678,7 +1629,7 @@ export function MailConsole() {
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() =>
-                      void handleCopy(selectedMailbox.email, "邮箱")
+                      void copyTextToClipboard(selectedMailbox.email, "邮箱")
                     }
                   >
                     <CopyIcon />
@@ -1697,7 +1648,7 @@ export function MailConsole() {
         </div>
 
         {adSlot?.enabled ? (
-          <div className="mx-auto w-full max-w-[104rem] px-3 pb-3 sm:px-4 md:px-6">
+          <div className="mx-auto hidden w-full max-w-[104rem] px-3 pb-3 sm:px-4 md:block md:px-6">
             <AdSlotCard
               title={adSlot.title}
               description={adSlot.description}
@@ -1717,29 +1668,55 @@ export function MailConsole() {
 
       <section className="relative z-10 mx-auto flex w-full max-w-[104rem] min-h-0 flex-1 gap-0 overflow-hidden px-0 md:px-3 md:py-3 lg:px-6">
         {/* Desktop three-pane layout */}
-        <div className="hidden w-full min-h-0 border border-border/70 bg-card/92 backdrop-blur md:grid md:grid-cols-[16rem_minmax(18rem,22rem)_minmax(0,1fr)] lg:grid-cols-[18rem_minmax(20rem,24rem)_minmax(0,1fr)]">
-          <div className="min-h-0 border-r border-border/70">
-            {mailboxesPanel}
+        <div className="hidden w-full min-h-0 border border-border/70 bg-card/97 md:flex">
+          <div className={cn(
+            "min-h-0 shrink-0 border-r border-border/70 transition-[width] duration-200",
+            sidebarCollapsed ? "w-10" : "w-64 lg:w-72"
+          )}>
+            {sidebarCollapsed ? (
+              <div className="flex h-full flex-col items-center py-2">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="展开邮箱列表"
+                  onClick={() => setSidebarCollapsed(false)}
+                >
+                  <PanelLeftOpenIcon />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex shrink-0 items-center justify-end px-2 pt-2">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="折叠邮箱列表"
+                    onClick={() => setSidebarCollapsed(true)}
+                  >
+                    <PanelLeftCloseIcon />
+                  </Button>
+                </div>
+                <div className="min-h-0 flex-1">
+                  {mailboxesPanel}
+                </div>
+              </div>
+            )}
           </div>
-          <div className="min-h-0 border-r border-border/70">
+          <div className="min-h-0 w-64 shrink-0 border-r border-border/70 lg:w-80">
             {messagesPanel}
           </div>
-          <div className="min-h-0">{detailPanel}</div>
+          <div className="min-h-0 flex-1">{detailPanel}</div>
         </div>
 
         {/* Mobile stacked views */}
         <div className="flex w-full min-h-0 flex-col md:hidden">
-          {mobileView === "messages" ? (
-            <div className="min-h-0 flex-1 bg-card/92 backdrop-blur">
-              {messagesPanel}
-            </div>
-          ) : mobileView === "detail" ? (
-            <div className="min-h-0 flex-1 bg-card/92 backdrop-blur">
+          {mobileView === "detail" ? (
+            <div className="min-h-0 flex-1 bg-card/97">
               {detailPanel}
             </div>
           ) : (
-            <div className="min-h-0 flex-1 bg-card/92 backdrop-blur">
-              {mailboxesPanel}
+            <div className="min-h-0 flex-1 bg-card/97">
+              {messagesPanel}
             </div>
           )}
         </div>
@@ -1833,7 +1810,7 @@ export function MailConsole() {
                         variant="outline"
                         size="sm"
                         onClick={() =>
-                          void handleCopy(accountDetail.email, "邮箱")
+                          void copyTextToClipboard(accountDetail.email, "邮箱")
                         }
                       >
                         <CopyIcon data-icon="inline-start" />
@@ -1858,7 +1835,7 @@ export function MailConsole() {
                         variant="outline"
                         size="sm"
                         onClick={() =>
-                          void handleCopy(accountDetail.password, "密码")
+                          void copyTextToClipboard(accountDetail.password, "密码")
                         }
                       >
                         <CopyIcon data-icon="inline-start" />

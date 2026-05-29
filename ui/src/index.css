@@ -1,7 +1,14 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/noto-serif";
+@font-face {
+  font-family: 'Noto Serif Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url(@fontsource-variable/noto-serif/files/noto-serif-latin-wght-normal.woff2) format('woff2-variations');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
 
 @custom-variant dark (&:is(.dark *));
 
@@ -175,6 +182,8 @@
       radial-gradient(circle at 1px 1px, var(--page-noise-dot) 1px, transparent 0);
     background-size: 100% 100%, 22px 22px;
     mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 85%);
+    will-change: auto;
+    contain: strict;
   }
 
   .mail-html-host {
@@ -182,39 +191,16 @@
     min-height: 100%;
   }
 
-  .ad-slot-card {
-    position: relative;
-    overflow: hidden;
-    border-color: color-mix(in oklab, var(--primary) 30%, var(--border));
-    background:
-      radial-gradient(circle at top right, rgb(249 115 22 / 0.16), transparent 26%),
-      linear-gradient(135deg, rgb(13 148 136 / 0.11), transparent 44%),
-      linear-gradient(180deg, rgb(255 255 255 / 0.92), rgb(255 255 255 / 0.98));
-    box-shadow:
-      0 0 0 1px rgb(13 148 136 / 0.06),
-      0 18px 40px rgb(15 23 42 / 0.08);
+  .ad-slot-promo {
+    contain: layout style;
   }
 
-  .ad-slot-card::before {
-    content: "";
-    position: absolute;
-    inset: -35%;
-    background: radial-gradient(circle, rgb(255 255 255 / 0.32), transparent 55%);
-    animation: ad-slot-pulse 4.6s ease-in-out infinite;
-    pointer-events: none;
+  .ad-slot-scan {
+    animation: ad-slot-scan 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
 
-  .ad-slot-card::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border: 1px solid rgb(249 115 22 / 0.18);
-    pointer-events: none;
-  }
-
-  .ad-slot-card > * {
-    position: relative;
-    z-index: 1;
+  .ad-slot-spin {
+    animation: ad-slot-spin-border 4s linear infinite;
   }
 
   .rich-text-content {
@@ -380,24 +366,18 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ad-slot-card::before {
+  .ad-slot-scan,
+  .ad-slot-spin {
     animation: none;
   }
 }
 
-@keyframes ad-slot-pulse {
-  0% {
-    transform: translate3d(-6%, -4%, 0) scale(0.96);
-    opacity: 0.3;
-  }
+@keyframes ad-slot-scan {
+  0% { transform: translateX(-150%) skewX(-25deg); }
+  100% { transform: translateX(300%) skewX(-25deg); }
+}
 
-  50% {
-    transform: translate3d(4%, 2%, 0) scale(1.02);
-    opacity: 0.72;
-  }
-
-  100% {
-    transform: translate3d(-6%, -4%, 0) scale(0.96);
-    opacity: 0.3;
-  }
+@keyframes ad-slot-spin-border {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
