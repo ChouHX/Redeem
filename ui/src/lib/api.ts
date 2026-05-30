@@ -283,6 +283,43 @@ export type CodeBatchDeleteResult = {
   total_count: number
 }
 
+export type MailboxCheckTaskStatus = "running" | "completed" | "cancelled"
+
+export type MailboxCheckTaskResult = {
+  inventory_id: number
+  type_id: number
+  type_name: string
+  email: string
+  status: "available" | "unavailable" | "redeemed"
+  ok: boolean
+  stage: string
+  message: string
+  duration_ms: number
+  auto_disabled: boolean
+  checked_at: string
+}
+
+export type MailboxCheckTaskSummary = {
+  id: string
+  status: MailboxCheckTaskStatus
+  total: number
+  processed: number
+  ok_count: number
+  fail_count: number
+  auto_disabled_count: number
+  auto_disable: boolean
+  concurrency: number
+  started_at: string
+  finished_at: string | null
+  cancel_requested: boolean
+  last_message: string
+  last_error: string
+}
+
+export type MailboxCheckTaskDetail = MailboxCheckTaskSummary & {
+  results: MailboxCheckTaskResult[]
+}
+
 export type RedeemRecordItem = {
   id: number
   code_id: number
@@ -1108,4 +1145,61 @@ export async function updateAdminPassword(
     body,
   })
   return payload
+}
+
+export async function startMailboxCheckTask(
+  token: string,
+  body: {
+    inventory_ids: number[]
+    concurrency?: number
+    auto_disable?: boolean
+  }
+) {
+  const payload = await apiRequest<MailboxCheckTaskSummary>(
+    "/api/redeem/admin/inventory/check",
+    {
+      method: "POST",
+      token,
+      body,
+    }
+  )
+  return payload
+}
+
+export async function listMailboxCheckTasks(token: string) {
+  const payload = await apiRequest<{ items: MailboxCheckTaskSummary[] }>(
+    "/api/redeem/admin/inventory/check/tasks",
+    {
+      method: "GET",
+      token,
+    }
+  )
+  return payload.data.items
+}
+
+export async function fetchMailboxCheckTask(token: string, taskId: string) {
+  const payload = await apiRequest<MailboxCheckTaskDetail>(
+    `/api/redeem/admin/inventory/check/tasks/${encodeURIComponent(taskId)}`,
+    {
+      method: "GET",
+      token,
+    }
+  )
+  return payload.data
+}
+
+export async function cancelMailboxCheckTaskRequest(
+  token: string,
+  taskId: string
+) {
+  const payload = await apiRequest<MailboxCheckTaskSummary>(
+    `/api/redeem/admin/inventory/check/tasks/${encodeURIComponent(
+      taskId
+    )}/cancel`,
+    {
+      method: "POST",
+      token,
+    }
+  )
+  return payload.data
 }

@@ -687,3 +687,69 @@ export async function getMessagesWithContent(
     metrics: result.metrics
   };
 }
+
+export async function probeMailboxAvailability(account) {
+  const requestId = randomUUID().slice(0, 8);
+  const requestLogger = logger.child({
+    requestId,
+    email: account.email,
+    action: "probe"
+  });
+  const startedAt = performance.now();
+
+  let tokenData;
+  try {
+    tokenData = await refreshAccessToken(
+      account.refresh_token,
+      account.client_id || CLIENT_ID
+    );
+  } catch (error) {
+    requestLogger.warn("imap_probe_token_failed", { error });
+    return {
+      ok: false,
+      stage: "token",
+      message: error?.message || "刷新令牌失败",
+      durationMs: elapsedMs(startedAt),
+      refreshToken: account.refresh_token
+    };
+  }
+
+  const client = createImapClient(
+    { ...account, access_token: tokenData.access_token },
+    requestId,
+    requestLogger
+  );
+
+  try {
+    await client.connect();
+    const mailbox = await client.mailboxOpen(INBOX_FOLDER_NAME, {
+      readOnly: true
+    });
+    const exists = Number(mailbox?.exists || 0);
+    const durationMs = elapsedMs(startedAt);
+    requestLogger.info("imap_probe_completed", {
+      durationMs,
+      mailboxExists: exists,
+      tokenCached: Boolean(tokenData.cached)
+    });
+    return {
+      ok: true,
+      stage: "ok",
+      message: "连接成功",
+      durationMs,
+      mailboxExists: exists,
+      refreshToken: tokenData.refresh_token || account.refresh_token
+    };
+  } catch (error) {
+    requestLogger.warn("imap_probe_failed", { error });
+    return {
+      ok: false,
+      stage: "imap",
+      message: error?.responseText || error?.message || "IMAP 连接失败",
+      durationMs: elapsedMs(startedAt),
+      refreshToken: tokenData.refresh_token || account.refresh_token
+    };
+  } finally {
+    await client.logout().catch(() => {});
+  }
+}

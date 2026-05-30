@@ -55,6 +55,12 @@ import {
   getMessagesWithContent
 } from "./imap.js";
 import {
+  cancelMailboxCheckTask,
+  getMailboxCheckTaskSummary,
+  listMailboxCheckTasks,
+  startMailboxCheckTask
+} from "./mailbox-checker.js";
+import {
   parseMailboxAccountLine,
   formatRedeemedInventory,
   normalizeRedeemEmailTypeInput,
@@ -1494,6 +1500,61 @@ app.get("/api/redeem/admin/records/:codeId", requireAdmin, (req, res) => {
     )
   );
 });
+
+app.post("/api/redeem/admin/inventory/check", requireAdmin, (req, res) => {
+  const inventoryIds = normalizeIdList(req.body?.inventory_ids || []);
+  if (!inventoryIds.length) {
+    res.status(400).json(fail("请至少选择一条库存记录"));
+    return;
+  }
+
+  const concurrency = parseBoundedInt(req.body?.concurrency, 4, {
+    min: 1,
+    max: 8
+  });
+  const autoDisable = parseBoolean(req.body?.auto_disable, false);
+
+  try {
+    const summary = startMailboxCheckTask({
+      inventoryIds,
+      concurrency,
+      autoDisable
+    });
+    res.json(ok(summary, `已启动检测任务，共 ${summary.total} 个邮箱`));
+  } catch (error) {
+    res.status(400).json(fail(error.message || "启动检测任务失败"));
+  }
+});
+
+app.get("/api/redeem/admin/inventory/check/tasks", requireAdmin, (_, res) => {
+  res.json(ok({ items: listMailboxCheckTasks() }, "检测任务列表获取成功"));
+});
+
+app.get(
+  "/api/redeem/admin/inventory/check/tasks/:taskId",
+  requireAdmin,
+  (req, res) => {
+    const summary = getMailboxCheckTaskSummary(req.params.taskId);
+    if (!summary) {
+      res.status(404).json(fail("检测任务不存在或已过期"));
+      return;
+    }
+    res.json(ok(summary, "检测任务状态获取成功"));
+  }
+);
+
+app.post(
+  "/api/redeem/admin/inventory/check/tasks/:taskId/cancel",
+  requireAdmin,
+  (req, res) => {
+    const summary = cancelMailboxCheckTask(req.params.taskId);
+    if (!summary) {
+      res.status(404).json(fail("检测任务不存在或已过期"));
+      return;
+    }
+    res.json(ok(summary, "已请求停止检测任务"));
+  }
+);
 
 app.use(express.static(FRONTEND_DIST_DIR, { index: false }));
 
