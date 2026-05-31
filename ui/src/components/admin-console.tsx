@@ -580,6 +580,7 @@ export function AdminConsole() {
   const [mailboxCheckPanelOpen, setMailboxCheckPanelOpen] = useState(false)
   const inventoryImportFileInputRef = useRef<HTMLInputElement | null>(null)
   const notifiedTaskIdsRef = useRef<Set<string>>(new Set())
+  const taskInventorySelectionsRef = useRef<Map<string, number[]>>(new Map())
   const mailboxCheckPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   )
@@ -630,6 +631,7 @@ export function AdminConsole() {
     setActiveMailboxCheckTask(null)
     setMailboxCheckPanelOpen(false)
     notifiedTaskIdsRef.current.clear()
+    taskInventorySelectionsRef.current.clear()
     if (mailboxCheckPollTimerRef.current) {
       clearTimeout(mailboxCheckPollTimerRef.current)
       mailboxCheckPollTimerRef.current = null
@@ -873,6 +875,20 @@ export function AdminConsole() {
     }`
     showSuccessToast(title, description)
     fireBrowserNotification(title, description)
+
+    const checkedIds = taskInventorySelectionsRef.current.get(task.id)
+    if (checkedIds?.length) {
+      const checkedSet = new Set(checkedIds)
+      setSelectedInventoryIds((current) =>
+        current.filter((id) => !checkedSet.has(id))
+      )
+    }
+    taskInventorySelectionsRef.current.delete(task.id)
+
+    if (task.auto_disabled_count > 0) {
+      void loadOverviewAndTypes()
+      void loadInventory()
+    }
   }
 
   async function pollMailboxCheckTasks(activeToken = tokenRef.current) {
@@ -1391,6 +1407,9 @@ export function AdminConsole() {
         concurrency,
         auto_disable: mailboxCheckAutoDisable,
       })
+      taskInventorySelectionsRef.current.set(payload.data.id, [
+        ...selectedInventoryIds,
+      ])
       ensureBrowserNotificationPermission()
       setActiveMailboxCheckTaskId(payload.data.id)
       setMailboxCheckPanelOpen(true)
