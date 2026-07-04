@@ -17,7 +17,6 @@ import {
 import {
   accessMailboxByCode,
   fetchPublicAds,
-  fetchTempMailboxMessageDetail,
   fetchTempMailboxMessages,
   type AdSlotConfig,
   type MailFolder,
@@ -309,7 +308,6 @@ export function MailConsole() {
   const [resultPage, setResultPage] = useState(1)
   const [loadingAccounts, setLoadingAccounts] = useState(false)
   const [fetching, setFetching] = useState(false)
-  const [loadingDetail, setLoadingDetail] = useState(false)
   const [fetchStates, setFetchStates] = useState<FetchState[]>([])
   const [detailDialogOpen, setDetailDialogOpen] = useState(false)
   const [detailContext, setDetailContext] = useState<ResultMessage | null>(null)
@@ -647,45 +645,10 @@ export function MailConsole() {
     }
   }
 
-  async function openMessageDetail(item: ResultMessage) {
-    if (item.message.body) {
-      setDetailContext(item)
-      setMailDetail(item.message)
-      setDetailDialogOpen(true)
-      setLoadingDetail(false)
-      return
-    }
-
-    if (!item.message.id) {
-      return
-    }
-
-    const account = accounts.find((candidate) => candidate.id === item.accountId)
-    if (!account) {
-      notify("账号不存在", "该邮件对应的账号已被删除。", "destructive")
-      return
-    }
-
+  function openMessageDetail(item: ResultMessage) {
     setDetailContext(item)
-    setMailDetail(null)
+    setMailDetail(item.message)
     setDetailDialogOpen(true)
-    setLoadingDetail(true)
-
-    try {
-      const result = await fetchTempMailboxMessageDetail(
-        {
-          ...account,
-          mail_protocol: item.protocol,
-        },
-        item.message.id,
-        folder
-      )
-      setMailDetail(result.item)
-    } catch (error) {
-      notify("邮件详情获取失败", formatErrorMessage(error), "destructive")
-    } finally {
-      setLoadingDetail(false)
-    }
   }
 
   function exportAccounts() {
@@ -1379,22 +1342,14 @@ export function MailConsole() {
                   : "overflow-y-auto px-6 py-5"
               )}
             >
-              {loadingDetail ? (
-                <div className="flex flex-col gap-3">
-                  <Skeleton className="h-5 w-2/3" />
-                  <Skeleton className="h-4 w-1/2" />
-                  <Skeleton className="h-80 w-full" />
-                </div>
-              ) : (
-                <div
-                  className={cn(
-                    "min-h-0 bg-background/40",
-                    detailBodyIsHtml && "h-full"
-                  )}
-                >
-                  {renderBody(mailDetail)}
-                </div>
-              )}
+              <div
+                className={cn(
+                  "min-h-0 bg-background/40",
+                  detailBodyIsHtml && "h-full"
+                )}
+              >
+                {renderBody(mailDetail)}
+              </div>
             </div>
           </DialogContent>
         </Dialog>

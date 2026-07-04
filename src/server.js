@@ -526,7 +526,7 @@ app.post("/api/mailboxes/temp/messages", async (req, res) => {
     });
     const includeBodies = parseBoolean(
       req.body?.include_bodies ?? req.body?.includeBodies,
-      false
+      true
     );
 
     const result = await getAccountMailMessagesPaged(payload, {
