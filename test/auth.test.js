@@ -82,3 +82,47 @@ test("refreshAccessToken caches, deduplicates in-flight refreshes, and honors fo
     global.fetch = originalFetch;
   }
 });
+
+test("refreshAccessToken can omit scope for IMAP fallback refreshes", async () => {
+  process.env.DB_PATH = path.join(tempDir, `auth-omit-scope-${Date.now()}.db`);
+  const authModuleUrl = pathToFileURL(
+    path.resolve("src/auth.js")
+  ).href;
+  const auth = await import(`${authModuleUrl}?cacheBust=${Date.now()}-omit`);
+
+  const originalFetch = global.fetch;
+  let requestBody = "";
+
+  global.fetch = async (_url, init = {}) => {
+    requestBody = init.body?.toString() || "";
+
+    return new Response(
+      JSON.stringify({
+        access_token: "access-token-no-scope",
+        refresh_token: "refresh-token-no-scope",
+        expires_in: 3600
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
+  };
+
+  try {
+    const result = await auth.refreshAccessToken(
+      "refresh-token-no-scope",
+      "client-no-scope",
+      { omitScope: true }
+    );
+
+    const body = new URLSearchParams(requestBody);
+    assert.equal(result.access_token, "access-token-no-scope");
+    assert.equal(body.get("client_id"), "client-no-scope");
+    assert.equal(body.get("grant_type"), "refresh_token");
+    assert.equal(body.get("refresh_token"), "refresh-token-no-scope");
+    assert.equal(body.has("scope"), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

@@ -21,6 +21,24 @@ export type MailRecipient = {
   emailAddress?: MailAddress
 }
 
+export type AdSlotAction = {
+  label: string
+  href: string
+}
+
+export type AdSlotConfig = {
+  enabled: boolean
+  title: string
+  description: string
+  image_url: string
+  primary_action: AdSlotAction
+}
+
+export type FaqConfig = {
+  html: string
+}
+
+export type MailProtocol = "imap" | "graph"
 export type MailFolder = "inbox" | "spam"
 
 export type MailMessageSummary = {
@@ -66,23 +84,7 @@ export type TempMailAccount = {
   password: string
   client_id: string
   refresh_token: string
-}
-
-export type AdSlotAction = {
-  label: string
-  href: string
-}
-
-export type AdSlotConfig = {
-  enabled: boolean
-  title: string
-  description: string
-  image_url: string
-  primary_action: AdSlotAction
-}
-
-export type FaqConfig = {
-  html: string
+  mail_protocol?: MailProtocol
 }
 
 export type RedeemAccessResult = {
@@ -100,6 +102,7 @@ export type RedeemType = {
   slug: string
   name: string
   description: string
+  mail_protocol: MailProtocol
   import_delimiter: string
   is_active: boolean
   available_inventory_count: number
@@ -122,6 +125,7 @@ export type RedeemedItem = {
     slug: string
     name: string
     description: string
+    mail_protocol?: MailProtocol
     import_delimiter: string
   }
   fields: RedeemFieldValue[]
@@ -141,6 +145,7 @@ export type RedeemExchangeResult = {
     slug: string
     name: string
     description: string
+    mail_protocol?: MailProtocol
     import_delimiter: string
   }
   items: RedeemedItem[]
@@ -158,6 +163,7 @@ export type RedeemOrderQueryResult = {
     slug: string
     name: string
     description: string
+    mail_protocol?: MailProtocol
     import_delimiter: string
   }
   items: RedeemedItem[]
@@ -224,6 +230,7 @@ export type RedeemInventoryItem = {
   type_name: string
   type_slug: string
   field_schema?: FieldSchema[]
+  mail_protocol?: MailProtocol
   import_delimiter: string
   payload: Record<string, string>
   serialized_value: string
@@ -283,43 +290,6 @@ export type CodeBatchDeleteResult = {
   total_count: number
 }
 
-export type MailboxCheckTaskStatus = "running" | "completed" | "cancelled"
-
-export type MailboxCheckTaskResult = {
-  inventory_id: number
-  type_id: number
-  type_name: string
-  email: string
-  status: "available" | "unavailable" | "redeemed"
-  ok: boolean
-  stage: string
-  message: string
-  duration_ms: number
-  auto_disabled: boolean
-  checked_at: string
-}
-
-export type MailboxCheckTaskSummary = {
-  id: string
-  status: MailboxCheckTaskStatus
-  total: number
-  processed: number
-  ok_count: number
-  fail_count: number
-  auto_disabled_count: number
-  auto_disable: boolean
-  concurrency: number
-  started_at: string
-  finished_at: string | null
-  cancel_requested: boolean
-  last_message: string
-  last_error: string
-}
-
-export type MailboxCheckTaskDetail = MailboxCheckTaskSummary & {
-  results: MailboxCheckTaskResult[]
-}
-
 export type RedeemRecordItem = {
   id: number
   code_id: number
@@ -330,6 +300,7 @@ export type RedeemRecordItem = {
   type_name: string
   type_slug: string
   field_schema?: FieldSchema[]
+  mail_protocol?: MailProtocol
   import_delimiter: string
   payload: Record<string, string>
   requester_ip: string
@@ -344,6 +315,7 @@ export type RedeemRecordGroup = {
   normalized_code: string
   type_name: string
   type_slug: string
+  mail_protocol?: MailProtocol
   item_count: number
   redeemed_at: string
   requester_ip: string
@@ -381,6 +353,7 @@ export type TypeFormPayload = {
   name: string
   slug: string
   description: string
+  mail_protocol: MailProtocol
   import_delimiter: string
   is_active: boolean
   field_schema: FieldSchema[]
@@ -401,6 +374,19 @@ export class ApiError extends Error {
 type RequestOptions = Omit<RequestInit, "body"> & {
   token?: string
   body?: BodyInit | Record<string, unknown> | null
+}
+
+const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || "").replace(
+  /\/+$/,
+  ""
+)
+
+function resolveApiUrl(url: string) {
+  if (!API_BASE_URL || /^https?:\/\//i.test(url)) {
+    return url
+  }
+
+  return `${API_BASE_URL}${url.startsWith("/") ? url : `/${url}`}`
 }
 
 function createHeaders(
@@ -436,7 +422,7 @@ export async function apiRequest<T>(
   url: string,
   { token, headers, body, ...init }: RequestOptions = {}
 ) {
-  const response = await fetch(url, {
+  const response = await fetch(resolveApiUrl(url), {
     ...init,
     headers: createHeaders(token, headers, body),
     body:
@@ -463,7 +449,7 @@ export async function textRequest(
   url: string,
   { token, headers, body, ...init }: RequestOptions = {}
 ) {
-  const response = await fetch(url, {
+  const response = await fetch(resolveApiUrl(url), {
     ...init,
     headers: createHeaders(token, headers, body),
     body:
@@ -537,6 +523,24 @@ export async function queryRedeemOrder(code: string) {
   return payload.data
 }
 
+export async function accessMailboxByCode(
+  code: string,
+  params: {
+    page?: number
+    page_size?: number
+  } = {}
+) {
+  const payload = await apiRequest<RedeemAccessResult>("/api/redeem/access", {
+    method: "POST",
+    body: {
+      code,
+      page: params.page,
+      page_size: params.page_size,
+    },
+  })
+  return payload
+}
+
 export async function fetchGeminiProTasks(
   cardCode: string,
   params: {
@@ -562,87 +566,6 @@ export async function submitGeminiProTasks(body: GeminiProSubmitPayload) {
     body,
   })
   return payload
-}
-
-export async function accessMailboxByCode(
-  code: string,
-  params: {
-    page?: number
-    page_size?: number
-  } = {}
-) {
-  const payload = await apiRequest<RedeemAccessResult>("/api/redeem/access", {
-    method: "POST",
-    body: {
-      code,
-      page: params.page,
-      page_size: params.page_size,
-    },
-  })
-  return payload
-}
-
-export async function fetchLatestMail(email: string, top = 1) {
-  const payload = await apiRequest<MailMessage[]>(
-    `/api/messages${createQuery({ email, top })}`,
-    {
-      method: "GET",
-    }
-  )
-  return payload
-}
-
-export async function fetchLatestMailWithTempAccount(
-  account: TempMailAccount,
-  top = 1
-) {
-  const payload = await apiRequest<MailMessage[]>("/api/temp-messages", {
-    method: "POST",
-    body: {
-      ...account,
-      top,
-    },
-  })
-  return payload
-}
-
-export async function fetchMailboxMessages(
-  email: string,
-  params: {
-    folder?: MailFolder
-    page?: number
-    page_size?: number
-  } = {}
-) {
-  const payload = await apiRequest<MailListResult>(
-    `/api/mailboxes/messages${createQuery({
-      email,
-      folder: params.folder,
-      page: params.page,
-      page_size: params.page_size,
-    })}`,
-    {
-      method: "GET",
-    }
-  )
-  return payload.data
-}
-
-export async function fetchMailboxMessageDetail(
-  email: string,
-  messageId: string,
-  folder: MailFolder = "inbox"
-) {
-  const payload = await apiRequest<MailDetailResult>(
-    `/api/mailboxes/messages/${encodeURIComponent(messageId)}${createQuery({
-      email,
-      folder,
-    })}`,
-    {
-      method: "GET",
-    }
-  )
-  return payload.data
 }
 
 export async function fetchTempMailboxMessages(
@@ -827,7 +750,7 @@ export async function importAdminInventoryFile(
 
   return await new Promise<ApiEnvelope<InventoryImportResult>>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open("POST", "/api/redeem/admin/inventory/import", true)
+    xhr.open("POST", resolveApiUrl("/api/redeem/admin/inventory/import"), true)
 
     if (token) {
       xhr.setRequestHeader("Authorization", `Bearer ${token}`)
@@ -1145,61 +1068,4 @@ export async function updateAdminPassword(
     body,
   })
   return payload
-}
-
-export async function startMailboxCheckTask(
-  token: string,
-  body: {
-    inventory_ids: number[]
-    concurrency?: number
-    auto_disable?: boolean
-  }
-) {
-  const payload = await apiRequest<MailboxCheckTaskSummary>(
-    "/api/redeem/admin/inventory/check",
-    {
-      method: "POST",
-      token,
-      body,
-    }
-  )
-  return payload
-}
-
-export async function listMailboxCheckTasks(token: string) {
-  const payload = await apiRequest<{ items: MailboxCheckTaskSummary[] }>(
-    "/api/redeem/admin/inventory/check/tasks",
-    {
-      method: "GET",
-      token,
-    }
-  )
-  return payload.data.items
-}
-
-export async function fetchMailboxCheckTask(token: string, taskId: string) {
-  const payload = await apiRequest<MailboxCheckTaskDetail>(
-    `/api/redeem/admin/inventory/check/tasks/${encodeURIComponent(taskId)}`,
-    {
-      method: "GET",
-      token,
-    }
-  )
-  return payload.data
-}
-
-export async function cancelMailboxCheckTaskRequest(
-  token: string,
-  taskId: string
-) {
-  const payload = await apiRequest<MailboxCheckTaskSummary>(
-    `/api/redeem/admin/inventory/check/tasks/${encodeURIComponent(
-      taskId
-    )}/cancel`,
-    {
-      method: "POST",
-      token,
-    }
-  )
-  return payload.data
 }

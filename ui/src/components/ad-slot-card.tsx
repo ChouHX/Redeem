@@ -59,12 +59,22 @@ export function AdSlotCard({
         )}
 
         <div className="min-w-0 flex-1">
-          <h3 className="text-[15px] font-bold leading-none tracking-tight text-zinc-900 dark:text-zinc-100">
+          <h3 className="truncate text-[15px] font-bold leading-none tracking-tight text-zinc-900 dark:text-zinc-100">
             {title}
           </h3>
-          <p className="mt-1.5 line-clamp-2 text-xs font-medium leading-[1.4] text-zinc-500 dark:text-zinc-400">
-            {description}
-          </p>
+          <div className="mt-1.5 overflow-hidden">
+            <div className="ad-slot-marquee flex w-max min-w-full items-center gap-8 sm:block sm:w-auto">
+              <p className="shrink-0 whitespace-nowrap text-xs font-medium leading-[1.4] text-zinc-500 dark:text-zinc-400 sm:line-clamp-2 sm:whitespace-normal">
+                {description}
+              </p>
+              <p
+                className="shrink-0 whitespace-nowrap text-xs font-medium leading-[1.4] text-zinc-500 dark:text-zinc-400 sm:hidden"
+                aria-hidden="true"
+              >
+                {description}
+              </p>
+            </div>
+          </div>
         </div>
 
         {primaryAction && (

@@ -34,6 +34,15 @@ export const TOKEN_URL =
 export const ACCESS_TOKEN_CACHE_SKEW_MS = Number(
   process.env.ACCESS_TOKEN_CACHE_SKEW_MS || 60000
 );
+export const IMAP_OAUTH_SCOPE =
+  process.env.IMAP_OAUTH_SCOPE ||
+  "https://outlook.office.com/IMAP.AccessAsUser.All offline_access";
+export const GRAPH_OAUTH_SCOPE =
+  process.env.GRAPH_OAUTH_SCOPE ||
+  "https://graph.microsoft.com/.default";
+export const GRAPH_API_BASE = String(
+  process.env.GRAPH_API_BASE || "https://graph.microsoft.com/v1.0"
+).replace(/\/+$/, "");
 
 export const IMAP_SERVER = process.env.IMAP_SERVER || "outlook.live.com";
 export const IMAP_PORT = Number(process.env.IMAP_PORT || 993);

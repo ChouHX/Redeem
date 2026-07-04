@@ -28,6 +28,12 @@ const fetchQuery = {
   internalDate: true,
   size: true
 };
+const summaryFetchQuery = {
+  uid: true,
+  envelope: true,
+  internalDate: true,
+  size: true
+};
 const mailParserOptions = {
   skipHtmlToText: true,
   skipTextToHtml: true,
@@ -127,6 +133,67 @@ function createRequestKey(account, descriptor) {
   ].join("::");
 }
 
+function normalizeProtocolLabel(value) {
+  return String(value || "imap").trim().toLowerCase() || "imap";
+}
+
+function normalizeOauthDescriptor(oauthOptions = {}) {
+  if (oauthOptions.omitScope || oauthOptions.scope === null) {
+    return "scope-omitted";
+  }
+
+  return String(oauthOptions.scope || "default").trim() || "default";
+}
+
+function normalizeHostList(value) {
+  const hosts = Array.isArray(value) ? value : String(value || "").split(",");
+  return [
+    ...new Set(
+      hosts
+        .map((host) => String(host || "").trim())
+        .filter(Boolean)
+    )
+  ];
+}
+
+function resolveImapHosts({ protocol = "imap", imapHost, imapHosts } = {}) {
+  const configuredHosts = normalizeHostList(imapHosts);
+  const singleHost = normalizeHostList(imapHost);
+
+  if (configuredHosts.length || singleHost.length) {
+    return normalizeHostList([...configuredHosts, ...singleHost]);
+  }
+
+  return [IMAP_SERVER];
+}
+
+function describeImapHosts(options = {}) {
+  return resolveImapHosts(options).join(",");
+}
+
+function getImapErrorMessage(error) {
+  return (
+    error?.responseText ||
+    error?.serverResponse ||
+    error?.message ||
+    "IMAP command failed"
+  );
+}
+
+function isRetryableImapError(error) {
+  const message = getImapErrorMessage(error).toLowerCase();
+  return [
+    "authenticated but not connected",
+    "command failed",
+    "connection",
+    "socket",
+    "timeout",
+    "closed",
+    "econnreset",
+    "unavailable"
+  ].some((fragment) => message.includes(fragment));
+}
+
 function getClientStats(client) {
   try {
     return client.stats();
@@ -135,10 +202,11 @@ function getClientStats(client) {
   }
 }
 
-function createImapClient(account, requestId, requestLogger) {
+function createImapClient(account, requestId, requestLogger, options = {}) {
+  const host = options.host || IMAP_SERVER;
   const client = new ImapFlow({
     id: `imap-${requestId}`,
-    host: IMAP_SERVER,
+    host,
     port: IMAP_PORT,
     secure: true,
     connectionTimeout: IMAP_CONNECTION_TIMEOUT,
@@ -208,6 +276,27 @@ async function parseFetchedMessage(fetched, folder) {
   };
 }
 
+function mapFetchedMessageSummary(fetched, folder) {
+  if (!fetched) {
+    return null;
+  }
+
+  const envelope = fetched.envelope || {};
+  const fromAddress = envelope.from?.[0] || envelope.sender?.[0] || null;
+
+  return {
+    id: String(fetched.uid || fetched.seq || ""),
+    folder: normalizeFolderKey(folder),
+    subject: envelope.subject || "(无主题)",
+    sender: mapAddressObject(fromAddress),
+    from: mapAddressObject(fromAddress),
+    toRecipients: mapAddressList(envelope.to),
+    receivedDateTime: toIsoString(fetched.internalDate || envelope.date),
+    bodyPreview: "",
+    contentType: "text"
+  };
+}
+
 function formatMessageSummary(message) {
   return {
     id: message.id,
@@ -222,13 +311,29 @@ function formatMessageSummary(message) {
   };
 }
 
-async function fetchAndParseSingleMessage(client, sequenceNumber, folder) {
-  const fetched = await client.fetchOne(sequenceNumber, fetchQuery);
+async function fetchAndParseSingleMessage(
+  client,
+  sequenceNumber,
+  folder,
+  includeBodies
+) {
+  const fetched = await client.fetchOne(
+    sequenceNumber,
+    includeBodies ? fetchQuery : summaryFetchQuery
+  );
   if (!fetched) {
     return {
       message: null,
       parseDurationMs: 0,
       totalMessageBytes: 0
+    };
+  }
+
+  if (!includeBodies) {
+    return {
+      message: mapFetchedMessageSummary(fetched, folder),
+      parseDurationMs: 0,
+      totalMessageBytes: Number(fetched.size || 0)
     };
   }
 
@@ -245,7 +350,8 @@ async function fetchAndParseMessageRange(
   client,
   sequenceRange,
   requestLogger,
-  folder
+  folder,
+  includeBodies
 ) {
   const messages = [];
   const parseErrors = [];
@@ -289,7 +395,19 @@ async function fetchAndParseMessageRange(
     }
   }
 
-  for await (const fetched of client.fetch(sequenceRange, fetchQuery)) {
+  for await (const fetched of client.fetch(
+    sequenceRange,
+    includeBodies ? fetchQuery : summaryFetchQuery
+  )) {
+    if (!includeBodies) {
+      totalMessageBytes += Number(fetched?.size || 0);
+      const summary = mapFetchedMessageSummary(fetched, folder);
+      if (summary) {
+        messages.push(summary);
+      }
+      continue;
+    }
+
     batch.push(fetched);
     if (batch.length >= parserConcurrency) {
       await flushBatch();
@@ -308,16 +426,27 @@ async function fetchAndParseMessageRange(
 
 async function listMessagesInternal(
   account,
-  { folder = "inbox", page = 1, pageSize = 10, includeBodies = false } = {}
+  {
+    folder = "inbox",
+    page = 1,
+    pageSize = 10,
+    includeBodies = false,
+    oauthOptions = {},
+    protocol = "imap",
+    imapHost,
+    imapHosts
+  } = {}
 ) {
   const folderKey = normalizeFolderKey(folder);
   const folderName = resolveFolderName(folderKey);
   const safePage = normalizePage(page);
   const safePageSize = normalizePageSize(pageSize);
+  const protocolLabel = normalizeProtocolLabel(protocol);
   const requestId = randomUUID().slice(0, 8);
   const requestLogger = logger.child({
     requestId,
     email: account.email,
+    protocol: protocolLabel,
     action: "list",
     folder: folderKey,
     page: safePage,
@@ -328,65 +457,55 @@ async function listMessagesInternal(
   const tokenStartedAt = performance.now();
   const tokenData = await refreshAccessToken(
     account.refresh_token,
-    account.client_id || CLIENT_ID
+    account.client_id || CLIENT_ID,
+    oauthOptions
   );
   const tokenDurationMs = elapsedMs(tokenStartedAt);
-  const client = createImapClient(
-    { ...account, access_token: tokenData.access_token },
-    requestId,
-    requestLogger
-  );
-
-  requestLogger.info("imap_fetch_started", {
-    mailbox: folderName,
-    parserConcurrency,
-    tokenCached: Boolean(tokenData.cached),
-    includeBodies
+  const resolvedImapHosts = resolveImapHosts({
+    protocol: protocolLabel,
+    imapHost,
+    imapHosts
   });
+  let lastError;
 
-  try {
-    const connectStartedAt = performance.now();
-    await client.connect();
-    const connectDurationMs = elapsedMs(connectStartedAt);
+  for (const [hostIndex, currentHost] of resolvedImapHosts.entries()) {
+    const client = createImapClient(
+      { ...account, access_token: tokenData.access_token },
+      requestId,
+      requestLogger,
+      { host: currentHost }
+    );
 
-    const openStartedAt = performance.now();
-    const mailbox = await client.mailboxOpen(folderName, {
-      readOnly: true
+    requestLogger.info("imap_fetch_started", {
+      mailbox: folderName,
+      imapHost: currentHost,
+      hostAttempt: hostIndex + 1,
+      hostCount: resolvedImapHosts.length,
+      parserConcurrency,
+      tokenCached: Boolean(tokenData.cached),
+      includeBodies
     });
-    const openDurationMs = elapsedMs(openStartedAt);
-    const exists = Number(mailbox?.exists || 0);
 
-    if (!exists) {
-      const stats = getClientStats(client);
-      requestLogger.info("imap_fetch_completed", {
-        mailbox: folderName,
-        mailboxExists: exists,
-        fetchedCount: 0,
-        sequenceRange: null,
-        tokenDurationMs,
-        connectDurationMs,
-        openDurationMs,
-        fetchPipelineDurationMs: 0,
-        parseDurationMs: 0,
-        totalDurationMs: elapsedMs(startedAt),
-        sentBytes: stats.sent,
-        receivedBytes: stats.received,
-        totalMessageBytes: 0,
-        rotatedRefreshToken:
-          tokenData.refresh_token !== account.refresh_token
+    try {
+      const connectStartedAt = performance.now();
+      await client.connect();
+      const connectDurationMs = elapsedMs(connectStartedAt);
+
+      const openStartedAt = performance.now();
+      const mailbox = await client.mailboxOpen(folderName, {
+        readOnly: true
       });
+      const openDurationMs = elapsedMs(openStartedAt);
+      const exists = Number(mailbox?.exists || 0);
 
-      return {
-        email: account.email,
-        folder: folderKey,
-        total: 0,
-        page: safePage,
-        page_size: safePageSize,
-        items: [],
-        refreshToken: tokenData.refresh_token || account.refresh_token,
-        metrics: {
+      if (!exists) {
+        const stats = getClientStats(client);
+        requestLogger.info("imap_fetch_completed", {
+          mailbox: folderName,
+          imapHost: currentHost,
           mailboxExists: exists,
           fetchedCount: 0,
+          sequenceRange: null,
           tokenDurationMs,
           connectDurationMs,
           openDurationMs,
@@ -396,79 +515,81 @@ async function listMessagesInternal(
           sentBytes: stats.sent,
           receivedBytes: stats.received,
           totalMessageBytes: 0,
-          tokenCached: Boolean(tokenData.cached)
-        }
-      };
-    }
+          rotatedRefreshToken:
+            tokenData.refresh_token !== account.refresh_token
+        });
 
-    const range = getSequenceRange(exists, safePage, safePageSize);
-    const fetchStartedAt = performance.now();
-    let parsedMessages = [];
-    let parseDurationMs = 0;
-    let totalMessageBytes = 0;
-    let parseErrors = [];
-    let sequenceRange = null;
+        return {
+          email: account.email,
+          folder: folderKey,
+          total: 0,
+          page: safePage,
+          page_size: safePageSize,
+          items: [],
+          refreshToken: tokenData.refresh_token || account.refresh_token,
+          metrics: {
+            imapHost: currentHost,
+            mailboxExists: exists,
+            fetchedCount: 0,
+            tokenDurationMs,
+            connectDurationMs,
+            openDurationMs,
+            fetchPipelineDurationMs: 0,
+            parseDurationMs: 0,
+            totalDurationMs: elapsedMs(startedAt),
+            sentBytes: stats.sent,
+            receivedBytes: stats.received,
+            totalMessageBytes: 0,
+            tokenCached: Boolean(tokenData.cached)
+          }
+        };
+      }
 
-    if (range?.range && range.startSeq === range.endSeq) {
-      sequenceRange = range.range;
-      const singleResult = await fetchAndParseSingleMessage(
-        client,
-        range.range,
-        folderKey
-      );
-      parsedMessages = singleResult.message ? [singleResult.message] : [];
-      parseDurationMs = singleResult.parseDurationMs;
-      totalMessageBytes = singleResult.totalMessageBytes;
-    } else if (range?.range) {
-      sequenceRange = range.range;
-      const rangeResult = await fetchAndParseMessageRange(
-        client,
-        range.range,
-        requestLogger,
-        folderKey
-      );
-      parsedMessages = rangeResult.messages;
-      parseErrors = rangeResult.parseErrors;
-      parseDurationMs = rangeResult.parseDurationMs;
-      totalMessageBytes = rangeResult.totalMessageBytes;
-    }
+      const range = getSequenceRange(exists, safePage, safePageSize);
+      const fetchStartedAt = performance.now();
+      let parsedMessages = [];
+      let parseDurationMs = 0;
+      let totalMessageBytes = 0;
+      let parseErrors = [];
+      let sequenceRange = null;
 
-    const fetchPipelineDurationMs = elapsedMs(fetchStartedAt);
-    const messages = parsedMessages.reverse();
-    const stats = getClientStats(client);
+      if (range?.range && range.startSeq === range.endSeq) {
+        sequenceRange = range.range;
+        const singleResult = await fetchAndParseSingleMessage(
+          client,
+          range.range,
+          folderKey,
+          includeBodies
+        );
+        parsedMessages = singleResult.message ? [singleResult.message] : [];
+        parseDurationMs = singleResult.parseDurationMs;
+        totalMessageBytes = singleResult.totalMessageBytes;
+      } else if (range?.range) {
+        sequenceRange = range.range;
+        const rangeResult = await fetchAndParseMessageRange(
+          client,
+          range.range,
+          requestLogger,
+          folderKey,
+          includeBodies
+        );
+        parsedMessages = rangeResult.messages;
+        parseErrors = rangeResult.parseErrors;
+        parseDurationMs = rangeResult.parseDurationMs;
+        totalMessageBytes = rangeResult.totalMessageBytes;
+      }
 
-    if (!messages.length && parseErrors.length) {
-      throw parseErrors[0];
-    }
+      const fetchPipelineDurationMs = elapsedMs(fetchStartedAt);
+      const messages = parsedMessages.reverse();
+      const stats = getClientStats(client);
 
-    requestLogger.info("imap_fetch_completed", {
-      mailbox: folderName,
-      mailboxExists: exists,
-      fetchedCount: messages.length,
-      sequenceRange,
-      tokenDurationMs,
-      connectDurationMs,
-      openDurationMs,
-      fetchPipelineDurationMs,
-      parseDurationMs,
-      totalDurationMs: elapsedMs(startedAt),
-      sentBytes: stats.sent,
-      receivedBytes: stats.received,
-      totalMessageBytes,
-      parseErrorCount: parseErrors.length,
-      tokenCached: Boolean(tokenData.cached),
-      rotatedRefreshToken: tokenData.refresh_token !== account.refresh_token
-    });
+      if (!messages.length && parseErrors.length) {
+        throw parseErrors[0];
+      }
 
-    return {
-      email: account.email,
-      folder: folderKey,
-      total: exists,
-      page: safePage,
-      page_size: safePageSize,
-      items: includeBodies ? messages : messages.map(formatMessageSummary),
-      refreshToken: tokenData.refresh_token || account.refresh_token,
-      metrics: {
+      requestLogger.info("imap_fetch_completed", {
+        mailbox: folderName,
+        imapHost: currentHost,
         mailboxExists: exists,
         fetchedCount: messages.length,
         sequenceRange,
@@ -482,27 +603,72 @@ async function listMessagesInternal(
         receivedBytes: stats.received,
         totalMessageBytes,
         parseErrorCount: parseErrors.length,
-        tokenCached: Boolean(tokenData.cached)
+        tokenCached: Boolean(tokenData.cached),
+        rotatedRefreshToken: tokenData.refresh_token !== account.refresh_token
+      });
+
+      return {
+        email: account.email,
+        folder: folderKey,
+        total: exists,
+        page: safePage,
+        page_size: safePageSize,
+        items: includeBodies ? messages : messages.map(formatMessageSummary),
+        refreshToken: tokenData.refresh_token || account.refresh_token,
+        metrics: {
+          imapHost: currentHost,
+          mailboxExists: exists,
+          fetchedCount: messages.length,
+          sequenceRange,
+          tokenDurationMs,
+          connectDurationMs,
+          openDurationMs,
+          fetchPipelineDurationMs,
+          parseDurationMs,
+          totalDurationMs: elapsedMs(startedAt),
+          sentBytes: stats.sent,
+          receivedBytes: stats.received,
+          totalMessageBytes,
+          parseErrorCount: parseErrors.length,
+          tokenCached: Boolean(tokenData.cached)
+        }
+      };
+    } catch (error) {
+      lastError = error;
+      const stats = getClientStats(client);
+      const retrying =
+        hostIndex < resolvedImapHosts.length - 1 && isRetryableImapError(error);
+      requestLogger[retrying ? "warn" : "error"]("imap_fetch_failed", {
+        mailbox: folderName,
+        imapHost: currentHost,
+        retrying,
+        durationMs: elapsedMs(startedAt),
+        sentBytes: stats.sent,
+        receivedBytes: stats.received,
+        error
+      });
+
+      if (!retrying) {
+        throw new Error(getImapErrorMessage(error));
       }
-    };
-  } catch (error) {
-    const stats = getClientStats(client);
-    requestLogger.error("imap_fetch_failed", {
-      mailbox: folderName,
-      durationMs: elapsedMs(startedAt),
-      sentBytes: stats.sent,
-      receivedBytes: stats.received,
-      error
-    });
-    throw new Error(error?.responseText || error?.message || "IMAP command failed");
-  } finally {
-    await client.logout().catch(() => {});
+    } finally {
+      await client.logout().catch(() => {});
+    }
   }
+
+  throw new Error(getImapErrorMessage(lastError));
 }
 
 async function getMessageDetailInternal(
   account,
-  { folder = "inbox", messageId }
+  {
+    folder = "inbox",
+    messageId,
+    oauthOptions = {},
+    protocol = "imap",
+    imapHost,
+    imapHosts
+  }
 ) {
   const folderKey = normalizeFolderKey(folder);
   const folderName = resolveFolderName(folderKey);
@@ -513,9 +679,11 @@ async function getMessageDetailInternal(
   }
 
   const requestId = randomUUID().slice(0, 8);
+  const protocolLabel = normalizeProtocolLabel(protocol);
   const requestLogger = logger.child({
     requestId,
     email: account.email,
+    protocol: protocolLabel,
     action: "detail",
     folder: folderKey,
     messageId: targetMessageId
@@ -525,65 +693,60 @@ async function getMessageDetailInternal(
   const tokenStartedAt = performance.now();
   const tokenData = await refreshAccessToken(
     account.refresh_token,
-    account.client_id || CLIENT_ID
+    account.client_id || CLIENT_ID,
+    oauthOptions
   );
   const tokenDurationMs = elapsedMs(tokenStartedAt);
-  const client = createImapClient(
-    { ...account, access_token: tokenData.access_token },
-    requestId,
-    requestLogger
-  );
-
-  requestLogger.info("imap_detail_started", {
-    mailbox: folderName,
-    tokenCached: Boolean(tokenData.cached)
+  const resolvedImapHosts = resolveImapHosts({
+    protocol: protocolLabel,
+    imapHost,
+    imapHosts
   });
+  let lastError;
 
-  try {
-    const connectStartedAt = performance.now();
-    await client.connect();
-    const connectDurationMs = elapsedMs(connectStartedAt);
+  for (const [hostIndex, currentHost] of resolvedImapHosts.entries()) {
+    const client = createImapClient(
+      { ...account, access_token: tokenData.access_token },
+      requestId,
+      requestLogger,
+      { host: currentHost }
+    );
 
-    const openStartedAt = performance.now();
-    await client.mailboxOpen(folderName, { readOnly: true });
-    const openDurationMs = elapsedMs(openStartedAt);
-
-    const fetchStartedAt = performance.now();
-    const fetched = await client.fetchOne(targetMessageId, fetchQuery, {
-      uid: true
-    });
-    const fetchDurationMs = elapsedMs(fetchStartedAt);
-
-    if (!fetched) {
-      throw new Error("未找到指定邮件");
-    }
-
-    const parseStartedAt = performance.now();
-    const item = await parseFetchedMessage(fetched, folderKey);
-    const parseDurationMs = elapsedMs(parseStartedAt);
-    const stats = getClientStats(client);
-
-    requestLogger.info("imap_detail_completed", {
+    requestLogger.info("imap_detail_started", {
       mailbox: folderName,
-      tokenDurationMs,
-      connectDurationMs,
-      openDurationMs,
-      fetchDurationMs,
-      parseDurationMs,
-      totalDurationMs: elapsedMs(startedAt),
-      sentBytes: stats.sent,
-      receivedBytes: stats.received,
-      totalMessageBytes: Number(fetched.size || 0),
-      tokenCached: Boolean(tokenData.cached),
-      rotatedRefreshToken: tokenData.refresh_token !== account.refresh_token
+      imapHost: currentHost,
+      hostAttempt: hostIndex + 1,
+      hostCount: resolvedImapHosts.length,
+      tokenCached: Boolean(tokenData.cached)
     });
 
-    return {
-      email: account.email,
-      folder: folderKey,
-      item,
-      refreshToken: tokenData.refresh_token || account.refresh_token,
-      metrics: {
+    try {
+      const connectStartedAt = performance.now();
+      await client.connect();
+      const connectDurationMs = elapsedMs(connectStartedAt);
+
+      const openStartedAt = performance.now();
+      await client.mailboxOpen(folderName, { readOnly: true });
+      const openDurationMs = elapsedMs(openStartedAt);
+
+      const fetchStartedAt = performance.now();
+      const fetched = await client.fetchOne(targetMessageId, fetchQuery, {
+        uid: true
+      });
+      const fetchDurationMs = elapsedMs(fetchStartedAt);
+
+      if (!fetched) {
+        throw new Error("未找到指定邮件");
+      }
+
+      const parseStartedAt = performance.now();
+      const item = await parseFetchedMessage(fetched, folderKey);
+      const parseDurationMs = elapsedMs(parseStartedAt);
+      const stats = getClientStats(client);
+
+      requestLogger.info("imap_detail_completed", {
+        mailbox: folderName,
+        imapHost: currentHost,
         tokenDurationMs,
         connectDurationMs,
         openDurationMs,
@@ -593,26 +756,60 @@ async function getMessageDetailInternal(
         sentBytes: stats.sent,
         receivedBytes: stats.received,
         totalMessageBytes: Number(fetched.size || 0),
-        tokenCached: Boolean(tokenData.cached)
+        tokenCached: Boolean(tokenData.cached),
+        rotatedRefreshToken: tokenData.refresh_token !== account.refresh_token
+      });
+
+      return {
+        email: account.email,
+        folder: folderKey,
+        item,
+        refreshToken: tokenData.refresh_token || account.refresh_token,
+        metrics: {
+          imapHost: currentHost,
+          tokenDurationMs,
+          connectDurationMs,
+          openDurationMs,
+          fetchDurationMs,
+          parseDurationMs,
+          totalDurationMs: elapsedMs(startedAt),
+          sentBytes: stats.sent,
+          receivedBytes: stats.received,
+          totalMessageBytes: Number(fetched.size || 0),
+          tokenCached: Boolean(tokenData.cached)
+        }
+      };
+    } catch (error) {
+      lastError = error;
+      const stats = getClientStats(client);
+      const retrying =
+        hostIndex < resolvedImapHosts.length - 1 && isRetryableImapError(error);
+      requestLogger[retrying ? "warn" : "error"]("imap_detail_failed", {
+        mailbox: folderName,
+        imapHost: currentHost,
+        retrying,
+        durationMs: elapsedMs(startedAt),
+        sentBytes: stats.sent,
+        receivedBytes: stats.received,
+        error
+      });
+
+      if (!retrying) {
+        throw new Error(getImapErrorMessage(error));
       }
-    };
-  } catch (error) {
-    const stats = getClientStats(client);
-    requestLogger.error("imap_detail_failed", {
-      mailbox: folderName,
-      durationMs: elapsedMs(startedAt),
-      sentBytes: stats.sent,
-      receivedBytes: stats.received,
-      error
-    });
-    throw new Error(error?.responseText || error?.message || "IMAP command failed");
-  } finally {
-    await client.logout().catch(() => {});
+    } finally {
+      await client.logout().catch(() => {});
+    }
   }
+
+  throw new Error(getImapErrorMessage(lastError));
 }
 
 export async function getMailMessagesPaged(account, options = {}) {
   const descriptor = {
+    protocol: normalizeProtocolLabel(options.protocol),
+    oauth: normalizeOauthDescriptor(options.oauthOptions),
+    imapHosts: describeImapHosts(options),
     action: "list",
     folder: normalizeFolderKey(options.folder),
     page: normalizePage(options.page),
@@ -642,6 +839,9 @@ export async function getMailMessagesPaged(account, options = {}) {
 
 export async function getMailMessageDetail(account, options = {}) {
   const descriptor = {
+    protocol: normalizeProtocolLabel(options.protocol),
+    oauth: normalizeOauthDescriptor(options.oauthOptions),
+    imapHosts: describeImapHosts(options),
     action: "detail",
     folder: normalizeFolderKey(options.folder),
     messageId: String(options.messageId || "").trim()
@@ -672,9 +872,11 @@ export async function getMailMessageDetail(account, options = {}) {
 export async function getMessagesWithContent(
   account,
   top = 1,
-  folder = "inbox"
+  folder = "inbox",
+  options = {}
 ) {
   const result = await getMailMessagesPaged(account, {
+    ...options,
     folder,
     page: 1,
     pageSize: normalizeTop(top),

@@ -4,6 +4,7 @@ dist/
 **/dist/
 dist-ssr/
 **/build/
+**/target/
 
 __pycache__/
 **/__pycache__/

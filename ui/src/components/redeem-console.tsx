@@ -476,7 +476,7 @@ export function RedeemConsole() {
               <Button variant="outline" size="sm" asChild>
                 <a href="/mail">
                   <MailIcon data-icon="inline-start" />
-                  查看邮件
+                  用户收件
                 </a>
               </Button>
             </div>

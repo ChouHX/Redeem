@@ -3,6 +3,8 @@ import {
   ACCESS_TOKEN_CACHE_SKEW_MS,
   ADMIN_TOKEN,
   CLIENT_ID,
+  GRAPH_OAUTH_SCOPE,
+  IMAP_OAUTH_SCOPE,
   TOKEN_URL
 } from "./config.js";
 import { getSystemConfigValue } from "./db.js";
@@ -10,9 +12,19 @@ import { elapsedMs, createLogger } from "./logger.js";
 
 const logger = createLogger("auth");
 const accessTokenCache = new Map();
+const OMITTED_SCOPE_CACHE_KEY = "(scope omitted)";
 
-function getTokenCacheKey(refreshToken, clientId) {
-  return `${clientId || CLIENT_ID}::${refreshToken || ""}`;
+function normalizeScope(scope, { omitScope = false } = {}) {
+  if (omitScope || scope === null) {
+    return "";
+  }
+
+  return String(scope || IMAP_OAUTH_SCOPE).trim() || IMAP_OAUTH_SCOPE;
+}
+
+function getTokenCacheKey(refreshToken, clientId, scope = IMAP_OAUTH_SCOPE) {
+  const normalizedScope = scope === "" ? "" : normalizeScope(scope);
+  return `${clientId || CLIENT_ID}::${normalizedScope || OMITTED_SCOPE_CACHE_KEY}::${refreshToken || ""}`;
 }
 
 function toExpiryTimestamp(expiresInSeconds) {
@@ -30,24 +42,26 @@ function createCachedResponse(entry) {
   };
 }
 
-function setAccessTokenCache(refreshToken, clientId, payload) {
+function setAccessTokenCache(refreshToken, clientId, scope, payload) {
   const cacheEntry = {
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token || refreshToken,
     expiresAt: payload.expires_at || toExpiryTimestamp(payload.expires_in)
   };
 
-  const primaryKey = getTokenCacheKey(refreshToken, clientId);
+  const primaryKey = getTokenCacheKey(refreshToken, clientId, scope);
   accessTokenCache.set(primaryKey, cacheEntry);
 
-  const rotatedKey = getTokenCacheKey(cacheEntry.refreshToken, clientId);
+  const rotatedKey = getTokenCacheKey(cacheEntry.refreshToken, clientId, scope);
   accessTokenCache.set(rotatedKey, cacheEntry);
 
   return cacheEntry;
 }
 
 export function clearAccessTokenCache(refreshToken, clientId = CLIENT_ID) {
-  accessTokenCache.delete(getTokenCacheKey(refreshToken, clientId));
+  for (const scope of [IMAP_OAUTH_SCOPE, GRAPH_OAUTH_SCOPE, ""]) {
+    accessTokenCache.delete(getTokenCacheKey(refreshToken, clientId, scope));
+  }
 }
 
 export function getAdminToken() {
@@ -88,9 +102,12 @@ export async function refreshAccessToken(
   options = {}
 ) {
   const normalizedClientId = clientId || CLIENT_ID;
-  const cacheKey = getTokenCacheKey(refreshToken, normalizedClientId);
+  const omitScope = Boolean(options.omitScope) || options.scope === null;
+  const scope = normalizeScope(options.scope, { omitScope });
+  const cacheKey = getTokenCacheKey(refreshToken, normalizedClientId, scope);
   const forceRefresh = Boolean(options.force);
   const cachedEntry = accessTokenCache.get(cacheKey);
+  const loggedScope = scope || OMITTED_SCOPE_CACHE_KEY;
 
   if (
     !forceRefresh &&
@@ -99,6 +116,7 @@ export async function refreshAccessToken(
   ) {
     logger.debug("oauth_refresh_cache_hit", {
       clientId: normalizedClientId,
+      oauthScope: loggedScope,
       expiresInSec: Math.floor((cachedEntry.expiresAt - Date.now()) / 1000)
     });
     return createCachedResponse(cachedEntry);
@@ -106,7 +124,8 @@ export async function refreshAccessToken(
 
   if (!forceRefresh && cachedEntry?.promise) {
     logger.debug("oauth_refresh_join_inflight", {
-      clientId: normalizedClientId
+      clientId: normalizedClientId,
+      oauthScope: loggedScope
     });
     return cachedEntry.promise;
   }
@@ -115,9 +134,11 @@ export async function refreshAccessToken(
   const body = new URLSearchParams({
     client_id: normalizedClientId,
     grant_type: "refresh_token",
-    refresh_token: refreshToken,
-    scope: "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+    refresh_token: refreshToken
   });
+  if (!omitScope && scope) {
+    body.set("scope", scope);
+  }
 
   const requestPromise = (async () => {
     const response = await fetch(TOKEN_URL, {
@@ -142,10 +163,11 @@ export async function refreshAccessToken(
       cached: false
     };
 
-    setAccessTokenCache(refreshToken, normalizedClientId, normalizedPayload);
+    setAccessTokenCache(refreshToken, normalizedClientId, scope, normalizedPayload);
 
     logger.info("oauth_refresh_succeeded", {
       clientId: normalizedClientId,
+      oauthScope: loggedScope,
       durationMs: elapsedMs(startedAt),
       expiresInSec: Number(payload.expires_in) || 0,
       rotatedRefreshToken:
@@ -166,6 +188,7 @@ export async function refreshAccessToken(
     accessTokenCache.delete(cacheKey);
     logger.warn("oauth_refresh_failed", {
       clientId: normalizedClientId,
+      oauthScope: loggedScope,
       durationMs: elapsedMs(startedAt),
       error
     });

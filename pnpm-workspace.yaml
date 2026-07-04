@@ -1,2 +1,7 @@
 packages:
   - "ui"
+  - "mail-tauri"
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  msw: true

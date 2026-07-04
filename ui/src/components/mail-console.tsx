@@ -1,40 +1,42 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState, type FormEvent } from "react"
 import {
-  ArrowLeftIcon,
+  CheckIcon,
   CopyIcon,
-  EllipsisVerticalIcon,
+  DownloadIcon,
   InboxIcon,
-  KeyRoundIcon,
+  Loader2Icon,
   MailIcon,
-  PanelLeftCloseIcon,
-  PanelLeftOpenIcon,
-  RefreshCcwIcon,
+  MenuIcon,
+  MoreVerticalIcon,
+  PlusIcon,
   SearchIcon,
-  ShieldAlertIcon,
-  UserRoundPlusIcon,
-  XIcon,
+  Trash2Icon,
+  UploadIcon,
 } from "lucide-react"
 
 import {
   accessMailboxByCode,
+  fetchPublicAds,
+  fetchTempMailboxMessageDetail,
+  fetchTempMailboxMessages,
   type AdSlotConfig,
-  type MailAddress,
   type MailFolder,
   type MailListResult,
   type MailMessage,
   type MailMessageSummary,
-  type RedeemAccessResult,
+  type MailProtocol,
   type RedeemedItem,
   type TempMailAccount,
-  fetchPublicAds,
-  fetchMailboxMessageDetail,
-  fetchMailboxMessages,
-  fetchTempMailboxMessageDetail,
-  fetchTempMailboxMessages,
 } from "@/lib/api"
-import { AdSlotCard } from "@/components/ad-slot-card"
+import { copyTextToClipboard, formatDateTime, formatErrorMessage, notify } from "@/lib/shared"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { AdSlotCard } from "@/components/ad-slot-card"
+import {
+  Card,
+  CardContent,
+  CardHeader,
+} from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -46,1926 +48,1340 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import {
-  Field,
-  FieldContent,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field"
+import { Field, FieldContent, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Sheet,
   SheetContent,
-  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { cn } from "@/lib/utils"
-import { copyTextToClipboard, formatErrorMessage, notify } from "@/lib/shared"
 
-type TempAccountFormState = {
-  email: string
-  password: string
-  refreshToken: string
-}
-
-type MailboxEntry = {
+type MailAccount = TempMailAccount & {
   id: string
+  label: string
+  raw_line: string
+  source: "code" | "manual"
+  allowed_protocols?: MailProtocol[]
+}
+
+type FetchState = {
+  accountId: string
   email: string
-  password: string
-  clientId: string
-  refreshToken: string
-  rawLine: string
-  sourceType: "redeem" | "temp"
-  sourceLabel: string
-  item?: RedeemedItem
+  protocol: MailProtocol
+  loading: boolean
+  error: string
+  result: MailListResult | null
 }
 
-type FolderMailLists = Record<MailFolder, MailListResult | null>
-type FolderLoadingState = Record<MailFolder, boolean>
-type FolderSelectionState = Record<MailFolder, string>
-type RedeemMailboxPageState = {
-  items: MailboxEntry[]
-  total: number
-  page: number
-  page_size: number
-}
-type MobileView = "messages" | "detail"
-
-const TEMP_ACCOUNT_STORAGE_KEY = "tempAccount"
-const DEFAULT_PAGE_SIZE = 10
-const EMPTY_MAIL_LISTS: FolderMailLists = {
-  inbox: null,
-  spam: null,
-}
-const EMPTY_FOLDER_LOADING: FolderLoadingState = {
-  inbox: false,
-  spam: false,
-}
-const EMPTY_FOLDER_SELECTION: FolderSelectionState = {
-  inbox: "",
-  spam: "",
+type ResultMessage = {
+  key: string
+  accountId: string
+  email: string
+  protocol: MailProtocol
+  message: MailMessageSummary
 }
 
-function parseAccountLine(rawText: string) {
+const LOCAL_ACCOUNTS_STORAGE_KEY = "redeem-mail-local-accounts"
+const MAIL_PAGE_SIZE = 10
+const FETCH_PAGE_SIZE = 100
+const MAIL_PROTOCOLS: MailProtocol[] = ["imap", "graph"]
+
+function createAccountId(email: string, refreshToken: string) {
+  return `${email.toLowerCase()}::${refreshToken.slice(0, 16)}`
+}
+
+function normalizeProtocol(value: unknown): MailProtocol {
+  return String(value || "").trim().toLowerCase() === "graph" ? "graph" : "imap"
+}
+
+function normalizeProtocolList(value: unknown, fallback: MailProtocol[] = ["imap"]) {
+  const values = Array.isArray(value) ? value : []
+  const protocols = values
+    .map(normalizeProtocol)
+    .filter((protocol, index, list) => list.indexOf(protocol) === index)
+
+  return protocols.length ? protocols : fallback
+}
+
+function getAccountProtocols(account: MailAccount | null | undefined) {
+  if (!account) {
+    return MAIL_PROTOCOLS
+  }
+
+  if (account.source === "code") {
+    return [normalizeProtocol(account.mail_protocol)]
+  }
+
+  return MAIL_PROTOCOLS
+}
+
+function readLocalAccounts(): MailAccount[] {
+  if (typeof window === "undefined") {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LOCAL_ACCOUNTS_STORAGE_KEY) || "[]")
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return (parsed as MailAccount[]).map((account): MailAccount => ({
+      ...account,
+      id: createAccountId(account.email, account.refresh_token),
+      mail_protocol: normalizeProtocol(account.mail_protocol),
+      allowed_protocols: MAIL_PROTOCOLS,
+      source: "manual",
+    }))
+  } catch {
+    return []
+  }
+}
+
+function saveLocalAccounts(accounts: MailAccount[]) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  localStorage.setItem(
+    LOCAL_ACCOUNTS_STORAGE_KEY,
+    JSON.stringify(accounts.filter((account) => account.source === "manual"))
+  )
+}
+
+function mergeAccounts(current: MailAccount[], incoming: MailAccount[]) {
+  const byId = new Map(current.map((account) => [account.id, account]))
+  for (const account of incoming) {
+    byId.set(account.id, account)
+  }
+  return [...byId.values()]
+}
+
+function parseAccountLine(
+  rawText: string,
+  protocols: MailProtocol[],
+  source: MailAccount["source"]
+): MailAccount | null {
   const text = String(rawText || "").trim()
   if (!text.includes("----")) {
     return null
   }
 
   const parts = text.split("----").map((item) => item.trim())
-  if (parts.length >= 4) {
-    return {
-      email: parts[0],
-      password: parts[1],
-      client_id: parts[2],
-      refresh_token: parts.slice(3).join("----"),
-    }
+  if (parts.length < 4) {
+    return null
   }
 
-  if (parts.length >= 2) {
-    return {
-      email: parts[0],
-      password: "",
-      client_id: "",
-      refresh_token: parts.slice(1).join("----"),
-    }
+  const email = parts[0] || ""
+  const password = parts[1] || ""
+  const clientId = parts[2] || ""
+  const refreshToken = parts.slice(3).join("----")
+
+  if (!email || !clientId || !refreshToken) {
+    return null
   }
 
-  return null
+  const allowedProtocols = normalizeProtocolList(protocols)
+
+  return {
+    id: createAccountId(email, refreshToken),
+    email,
+    password,
+    client_id: clientId,
+    refresh_token: refreshToken,
+    mail_protocol: allowedProtocols[0],
+    allowed_protocols: allowedProtocols,
+    raw_line: text,
+    label: email,
+    source,
+  }
 }
 
-function parseEmailFromRedeemedItem(item: RedeemedItem) {
-  if (item.payload.raw_line) {
-    return String(item.payload.raw_line).split("----")[0]?.trim() || ""
+function accountFromRedeemedItem(item: RedeemedItem, index: number): MailAccount | null {
+  const protocol = normalizeProtocol(item.type.mail_protocol)
+  const rawLine = String(item.payload.raw_line || item.formatted_line || "").trim()
+  const parsed = parseAccountLine(rawLine, [protocol], "code")
+  if (parsed) {
+    return {
+      ...parsed,
+      label: item.type.name || `账号 ${index + 1}`,
+    }
   }
 
-  return String(
+  const email = String(
     item.payload.account ||
       item.payload.email ||
       item.payload.mail ||
       item.payload.username ||
       ""
   ).trim()
-}
+  const refreshToken = String(item.payload.refreshtoken || item.payload.refresh_token || "").trim()
 
-function createTempMailboxEntry(account: TempMailAccount): MailboxEntry {
-  return {
-    id: `temp-${account.email}`,
-    email: account.email,
-    password: account.password,
-    clientId: account.client_id,
-    refreshToken: account.refresh_token,
-    rawLine: [
-      account.email,
-      account.password || "",
-      account.client_id || "",
-      account.refresh_token || "",
-    ].join("----"),
-    sourceType: "temp",
-    sourceLabel: "临时账户",
-  }
-}
-
-function createRedeemMailboxEntry(
-  item: RedeemedItem,
-  index: number
-): MailboxEntry | null {
-  const parsed = parseAccountLine(
-    String(item.payload.raw_line || item.formatted_line || "")
-  )
-  const email = parsed?.email || parseEmailFromRedeemedItem(item)
-  if (!email) {
+  if (!email || !refreshToken) {
     return null
   }
 
   return {
-    id: `redeem-${index}-${email}`,
+    id: createAccountId(email, refreshToken),
     email,
-    password:
-      parsed?.password || String(item.payload.password || item.payload.pass || ""),
-    clientId:
-      parsed?.client_id ||
-      String(item.payload.oauth2id || item.payload.client_id || ""),
-    refreshToken:
-      parsed?.refresh_token ||
-      String(item.payload.refreshtoken || item.payload.refresh_token || ""),
-    rawLine: String(item.payload.raw_line || item.formatted_line || "").trim(),
-    sourceType: "redeem",
-    sourceLabel: item.type.name || "兑换结果",
-    item,
+    password: String(item.payload.password || item.payload.pass || ""),
+    client_id: String(item.payload.oauth2id || item.payload.client_id || ""),
+    refresh_token: refreshToken,
+    mail_protocol: protocol,
+    allowed_protocols: [protocol],
+    raw_line: rawLine,
+    label: item.type.name || `账号 ${index + 1}`,
+    source: "code",
   }
 }
 
-function buildMailboxCollection(
-  redeemMailboxes: MailboxEntry[],
-  tempAccount: TempMailAccount | null
-) {
-  const map = new Map<string, MailboxEntry>()
-
-  if (tempAccount?.email) {
-    const tempEntry = createTempMailboxEntry(tempAccount)
-    map.set(tempEntry.email.toLowerCase(), tempEntry)
-  }
-
-  for (const mailbox of redeemMailboxes) {
-    const key = mailbox.email.toLowerCase()
-    if (!map.has(key)) {
-      map.set(key, mailbox)
-    }
-  }
-
-  return Array.from(map.values())
+function resolveAddress(message?: MailMessageSummary | null) {
+  const address = message?.sender?.emailAddress || message?.from?.emailAddress
+  return address?.name || address?.address || "未知发件人"
 }
 
-function mergeMailboxEntries(
-  current: MailboxEntry[],
-  next: MailboxEntry[]
-) {
-  const map = new Map<string, MailboxEntry>()
-
-  for (const mailbox of current) {
-    map.set(mailbox.email.toLowerCase(), mailbox)
-  }
-
-  for (const mailbox of next) {
-    map.set(mailbox.email.toLowerCase(), mailbox)
-  }
-
-  return Array.from(map.values())
-}
-
-function formatFolderLabel(folder: MailFolder) {
-  return folder === "spam" ? "垃圾箱" : "收件箱"
-}
-
-function formatMailDate(value: string | undefined) {
-  if (!value) {
-    return "未知时间"
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  const now = new Date()
-  const dayMs = 24 * 60 * 60 * 1000
-  const startOfToday = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate()
+function isHtmlMailBody(message: MailMessage | null) {
+  return (
+    Boolean(message?.body?.content) &&
+    String(message?.body?.contentType || "").toLowerCase() === "html"
   )
-  const startOfTarget = new Date(
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate()
-  )
-  const diffDays = Math.round(
-    (startOfToday.getTime() - startOfTarget.getTime()) / dayMs
-  )
-
-  if (diffDays === 0) {
-    return date.toLocaleTimeString("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-    })
-  }
-
-  if (diffDays === 1) {
-    return `昨天 ${date.toLocaleTimeString("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-    })}`
-  }
-
-  if (diffDays < 7) {
-    return `${diffDays} 天前`
-  }
-
-  return date.toLocaleDateString("zh-CN", {
-    year: "2-digit",
-    month: "2-digit",
-    day: "2-digit",
-  })
 }
 
-function formatDetailMailDate(value: string | undefined) {
-  if (!value) {
-    return "未知时间"
+function renderBody(message: MailMessage | null) {
+  const body = message?.body
+  if (!body?.content) {
+    return <div className="text-sm text-muted-foreground">暂无正文内容。</div>
   }
 
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
-}
-
-function sanitizeStyleContent(value: string) {
-  return String(value || "")
-    .replace(/@import[\s\S]*?;/gi, "")
-    .replace(/expression\s*\([^)]*\)/gi, "")
-    .replace(/url\s*\(\s*['"]?\s*javascript:[^)]*\)/gi, "url()")
-}
-
-function sanitizeHtml(html: string) {
-  const parser = new DOMParser()
-  const doc = parser.parseFromString(String(html || ""), "text/html")
-
-  doc
-    .querySelectorAll(
-      "script, iframe, object, embed, link, meta, base, form"
+  if (isHtmlMailBody(message)) {
+    return (
+      <iframe
+        title="邮件正文"
+        sandbox="allow-popups allow-popups-to-escape-sandbox"
+        srcDoc={body.content}
+        className="h-full w-full border-0 bg-background"
+      />
     )
-    .forEach((node) => {
-      node.remove()
-    })
-
-  const styleBlocks = Array.from(doc.querySelectorAll("style")).map((node) => {
-    const nextStyle = doc.createElement("style")
-    nextStyle.textContent = sanitizeStyleContent(node.textContent || "")
-    node.remove()
-    return nextStyle.outerHTML
-  })
-
-  doc.querySelectorAll("*").forEach((element) => {
-    Array.from(element.attributes).forEach((attribute) => {
-      const name = attribute.name.toLowerCase()
-      const value = attribute.value || ""
-
-      if (name.startsWith("on")) {
-        element.removeAttribute(attribute.name)
-        return
-      }
-
-      const isUrlAttribute = [
-        "href",
-        "src",
-        "xlink:href",
-        "action",
-        "formaction",
-      ].includes(name)
-      if (isUrlAttribute && /^\s*javascript:/i.test(value)) {
-        element.removeAttribute(attribute.name)
-        return
-      }
-
-      if (
-        name === "style" &&
-        /(expression\s*\(|url\s*\(\s*['"]?\s*javascript:)/i.test(value)
-      ) {
-        element.removeAttribute(attribute.name)
-      }
-    })
-  })
-
-  return `${styleBlocks.join("\n")}${doc.body.innerHTML}`
-}
-
-function MailHtmlContent({ html }: { html: string }) {
-  const hostRef = useRef<HTMLDivElement | null>(null)
-  const shadowRootRef = useRef<ShadowRoot | null>(null)
-
-  useEffect(() => {
-    const host = hostRef.current
-    if (!host) {
-      return
-    }
-
-    if (!shadowRootRef.current) {
-      shadowRootRef.current = host.attachShadow({ mode: "open" })
-    }
-
-    const shadowRoot = shadowRootRef.current
-    shadowRoot.innerHTML = `
-      <style>
-        :host {
-          display: block;
-          color: var(--foreground);
-        }
-
-        .mail-html-root {
-          min-height: 100%;
-          color: inherit;
-          overflow-wrap: anywhere;
-          word-break: break-word;
-        }
-
-        .mail-html-root,
-        .mail-html-root * {
-          box-sizing: border-box;
-        }
-
-        .mail-html-root img,
-        .mail-html-root table,
-        .mail-html-root iframe,
-        .mail-html-root video {
-          max-width: 100%;
-        }
-
-        .mail-html-root img {
-          height: auto;
-        }
-
-        .mail-html-root pre {
-          white-space: pre-wrap;
-        }
-      </style>
-      <div class="mail-html-root">${html || "<div>(无内容)</div>"}</div>
-    `
-  }, [html])
-
-  return <div ref={hostRef} className="mail-html-host" />
-}
-
-function resolveMailAddress(address?: MailAddress) {
-  if (!address) {
-    return { name: "未知发件人", address: "" }
   }
 
-  return {
-    name: address.name || address.address || "未知发件人",
-    address: address.address || "",
-  }
+  return (
+    <pre className="m-0 whitespace-pre-wrap break-words text-sm leading-7">
+      {body.content}
+    </pre>
+  )
 }
 
-function mailboxToTempAccount(mailbox: MailboxEntry): TempMailAccount {
-  return {
-    email: mailbox.email,
-    password: mailbox.password,
-    client_id: mailbox.clientId,
-    refresh_token: mailbox.refreshToken,
-  }
-}
-
-function mailboxInitial(mailbox: MailboxEntry) {
-  return (mailbox.email || "?").slice(0, 1).toUpperCase()
+function protocolLabel(protocol: MailProtocol) {
+  return protocol === "graph" ? "Graph" : "IMAP"
 }
 
 export function MailConsole() {
+  const [redeemCode, setRedeemCode] = useState("")
+  const [accountQuery, setAccountQuery] = useState("")
+  const [accountsCollapsed, setAccountsCollapsed] = useState(false)
+  const [mailboxSheetOpen, setMailboxSheetOpen] = useState(false)
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [importMode, setImportMode] = useState<"code" | "manual">("manual")
+  const [manualText, setManualText] = useState("")
+  const [accounts, setAccounts] = useState<MailAccount[]>([])
+  const [selectedAccountId, setSelectedAccountId] = useState("")
+  const [enabledProtocols, setEnabledProtocols] = useState<MailProtocol[]>(["imap"])
+  const [folder, setFolder] = useState<MailFolder>("inbox")
+  const [resultPage, setResultPage] = useState(1)
+  const [loadingAccounts, setLoadingAccounts] = useState(false)
+  const [fetching, setFetching] = useState(false)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [fetchStates, setFetchStates] = useState<FetchState[]>([])
+  const [detailDialogOpen, setDetailDialogOpen] = useState(false)
+  const [detailContext, setDetailContext] = useState<ResultMessage | null>(null)
+  const [mailDetail, setMailDetail] = useState<MailMessage | null>(null)
   const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
-  const [code, setCode] = useState("")
-  const [activeFolder, setActiveFolder] = useState<MailFolder>("inbox")
-  const [currentEmail, setCurrentEmail] = useState("")
-  const [mailLists, setMailLists] = useState<FolderMailLists>(EMPTY_MAIL_LISTS)
-  const [folderLoading, setFolderLoading] =
-    useState<FolderLoadingState>(EMPTY_FOLDER_LOADING)
-  const [selectedMessageIds, setSelectedMessageIds] =
-    useState<FolderSelectionState>(EMPTY_FOLDER_SELECTION)
-  const [messageDetail, setMessageDetail] = useState<MailMessage | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [codeDialogOpen, setCodeDialogOpen] = useState(false)
-  const [mobileMailboxesOpen, setMobileMailboxesOpen] = useState(false)
-  const [accountDetailOpen, setAccountDetailOpen] = useState(false)
-  const [accountDetail, setAccountDetail] = useState<MailboxEntry | null>(null)
-  const [tempDialogOpen, setTempDialogOpen] = useState(false)
-  const [tempAccount, setTempAccount] = useState<TempMailAccount | null>(null)
-  const [tempAccountForm, setTempAccountForm] = useState<TempAccountFormState>({
-    email: "",
-    password: "",
-    refreshToken: "",
-  })
-  const [redeemMailboxes, setRedeemMailboxes] = useState<MailboxEntry[]>([])
-  const [redeemAccess, setRedeemAccess] = useState<Pick<
-    RedeemAccessResult,
-    "code" | "source" | "redeemed_at"
-  > | null>(null)
-  const [redeemMailboxPage, setRedeemMailboxPage] =
-    useState<RedeemMailboxPageState | null>(null)
-  const [accountsLoading, setAccountsLoading] = useState(false)
-  const [codeLoading, setCodeLoading] = useState(false)
-  const [mailboxFilter, setMailboxFilter] = useState("")
-  const [messageFilter, setMessageFilter] = useState("")
-  const [mobileView, setMobileView] = useState<MobileView>("messages")
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const sidebarScrollRefs = useRef<Record<MailFolder, HTMLDivElement | null>>({
-    inbox: null,
-    spam: null,
-  })
+  const detailBodyIsHtml = isHtmlMailBody(mailDetail)
 
+  const filteredAccounts = useMemo(() => {
+    const query = accountQuery.trim().toLowerCase()
+    if (!query) {
+      return accounts
+    }
+
+    return accounts.filter((account) =>
+      [
+        account.email,
+        account.label,
+        account.mail_protocol,
+        account.source === "manual" ? "本地" : "兑换码",
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    )
+  }, [accountQuery, accounts])
+  const selectedAccount = useMemo(
+    () => accounts.find((account) => account.id === selectedAccountId) || null,
+    [accounts, selectedAccountId]
+  )
+  const currentMailboxLabel = selectedAccount?.email || "未选择邮箱"
+  const currentMailboxText = selectedAccount?.email || ""
+  const selectedAllowedProtocols = getAccountProtocols(selectedAccount)
+  const selectedEnabledProtocols = enabledProtocols.filter((protocol) =>
+    selectedAllowedProtocols.includes(protocol)
+  )
+  const resultMessages = useMemo(() => {
+    const items: ResultMessage[] = []
+    for (const state of fetchStates) {
+      for (const message of state.result?.items || []) {
+        items.push({
+          key: `${state.accountId}-${state.protocol}-${message.id || items.length}`,
+          accountId: state.accountId,
+          email: state.email,
+          protocol: state.protocol,
+          message,
+        })
+      }
+    }
+    return items
+  }, [fetchStates])
+  const failedFetchStates = useMemo(
+    () => fetchStates.filter((state) => state.error),
+    [fetchStates]
+  )
+  const totalResultPages = Math.max(1, Math.ceil(resultMessages.length / MAIL_PAGE_SIZE))
+  const pagedMessages = resultMessages.slice(
+    (resultPage - 1) * MAIL_PAGE_SIZE,
+    resultPage * MAIL_PAGE_SIZE
+  )
   useEffect(() => {
-    const stored = sessionStorage.getItem(TEMP_ACCOUNT_STORAGE_KEY)
-    if (!stored) {
-      return
-    }
-
-    try {
-      const parsed = JSON.parse(stored) as TempMailAccount
-      setTempAccount(parsed)
-      setTempAccountForm({
-        email: parsed.email,
-        password: parsed.password,
-        refreshToken: parsed.refresh_token,
-      })
-    } catch {
-      sessionStorage.removeItem(TEMP_ACCOUNT_STORAGE_KEY)
-    }
+    const storedAccounts = readLocalAccounts()
+    setAccounts(storedAccounts)
+    setSelectedAccountId(storedAccounts[0]?.id || "")
   }, [])
 
   useEffect(() => {
-    void (async () => {
-      try {
-        setAdSlot(await fetchPublicAds())
-      } catch {
-        setAdSlot(null)
-      }
-    })()
-  }, [])
+    let cancelled = false
 
-  const mailboxes = useMemo(
-    () => buildMailboxCollection(redeemMailboxes, tempAccount),
-    [redeemMailboxes, tempAccount]
-  )
-  const accountListMailboxes = useMemo(() => {
-    const visible: MailboxEntry[] = []
-    const seen = new Set<string>()
-
-    if (tempAccount?.email) {
-      const tempEntry = createTempMailboxEntry(tempAccount)
-      visible.push(tempEntry)
-      seen.add(tempEntry.email.toLowerCase())
-    }
-
-    for (const mailbox of redeemMailboxPage?.items || []) {
-      const key = mailbox.email.toLowerCase()
-      if (seen.has(key)) {
-        continue
-      }
-      visible.push(mailbox)
-      seen.add(key)
-    }
-
-    return visible
-  }, [redeemMailboxPage, tempAccount])
-  const accountListPageCount = Math.max(
-    Math.ceil(
-      (redeemMailboxPage?.total || 0) /
-        (redeemMailboxPage?.page_size || DEFAULT_PAGE_SIZE)
-    ),
-    1
-  )
-
-  const filteredMailboxes = useMemo(() => {
-    const query = mailboxFilter.trim().toLowerCase()
-    if (!query) {
-      return accountListMailboxes
-    }
-    return accountListMailboxes.filter((mailbox) =>
-      mailbox.email.toLowerCase().includes(query)
-    )
-  }, [accountListMailboxes, mailboxFilter])
-
-  const selectedMailbox = useMemo(
-    () => mailboxes.find((item) => item.email === currentEmail) || null,
-    [mailboxes, currentEmail]
-  )
-
-  const activeFolderLoading = folderLoading[activeFolder]
-  const sender = useMemo(() => {
-    return resolveMailAddress(
-      messageDetail?.sender?.emailAddress || messageDetail?.from?.emailAddress
-    )
-  }, [messageDetail])
-  const recipients = useMemo(() => {
-    return (
-      messageDetail?.toRecipients
-        ?.map((item) => item.emailAddress?.name || item.emailAddress?.address)
-        .filter(Boolean)
-        .join("，") || "未知收件人"
-    )
-  }, [messageDetail])
-  const bodyContent = messageDetail?.body?.content || ""
-  const contentType = messageDetail?.body?.contentType || "text"
-  const isHtmlContent =
-    contentType === "html" || /<(html|body|div|p|table)/i.test(bodyContent)
-  const sanitizedBody = useMemo(
-    () => (isHtmlContent ? sanitizeHtml(bodyContent) : ""),
-    [bodyContent, isHtmlContent]
-  )
-
-  const currentMailList = mailLists[activeFolder]
-  const filteredMessages = useMemo(() => {
-    if (!currentMailList) {
-      return []
-    }
-    const query = messageFilter.trim().toLowerCase()
-    if (!query) {
-      return currentMailList.items
-    }
-    return currentMailList.items.filter((message) => {
-      const subject = (message.subject || "").toLowerCase()
-      const preview = (message.bodyPreview || "").toLowerCase()
-      const from = resolveMailAddress(
-        message.sender?.emailAddress || message.from?.emailAddress
-      )
-      const fromText = `${from.name} ${from.address}`.toLowerCase()
-      return (
-        subject.includes(query) ||
-        preview.includes(query) ||
-        fromText.includes(query)
-      )
-    })
-  }, [currentMailList, messageFilter])
-
-  useEffect(() => {
-    if (!mailboxes.length) {
-      setCurrentEmail("")
-      return
-    }
-
-    if (!mailboxes.some((mailbox) => mailbox.email === currentEmail)) {
-      setCurrentEmail(mailboxes[0].email)
-    }
-  }, [mailboxes, currentEmail])
-
-  function resetRedeemMailboxAccess() {
-    setRedeemAccess(null)
-    setRedeemMailboxPage(null)
-    setRedeemMailboxes([])
-  }
-
-  function resetMailboxView(nextFolder: MailFolder = "inbox") {
-    setActiveFolder(nextFolder)
-    setMailLists(EMPTY_MAIL_LISTS)
-    setSelectedMessageIds(EMPTY_FOLDER_SELECTION)
-    setMessageDetail(null)
-  }
-
-  async function openMessageDetailForMailbox(
-    mailbox: MailboxEntry,
-    message: MailMessageSummary,
-    folder: MailFolder
-  ) {
-    if (!message.id) {
-      return
-    }
-
-    setDetailLoading(true)
-    setSelectedMessageIds((current) => ({
-      ...current,
-      [folder]: message.id || "",
-    }))
-    setMobileView("detail")
-
-    try {
-      const result =
-        mailbox.sourceType === "temp"
-          ? await fetchTempMailboxMessageDetail(
-              mailboxToTempAccount(mailbox),
-              message.id,
-              folder
-            )
-          : await fetchMailboxMessageDetail(mailbox.email, message.id, folder)
-
-      setMessageDetail(result.item)
-    } catch (error) {
-      notify("详情获取失败", formatErrorMessage(error), "destructive")
-    } finally {
-      setDetailLoading(false)
-    }
-  }
-
-  async function loadFolderMessages(
-    mailbox: MailboxEntry,
-    folder: MailFolder,
-    {
-      page = 1,
-      pageSize = DEFAULT_PAGE_SIZE,
-      preserveSelection = true,
-    }: {
-      page?: number
-      pageSize?: number
-      preserveSelection?: boolean
-    } = {}
-  ) {
-    setFolderLoading((current) => ({ ...current, [folder]: true }))
-    setCurrentEmail(mailbox.email)
-    setActiveFolder(folder)
-
-    try {
-      const result =
-        mailbox.sourceType === "temp"
-          ? await fetchTempMailboxMessages(mailboxToTempAccount(mailbox), {
-              folder,
-              page,
-              page_size: pageSize,
-            })
-          : await fetchMailboxMessages(mailbox.email, {
-              folder,
-              page,
-              page_size: pageSize,
-            })
-
-      setMailLists((current) => ({
-        ...current,
-        [folder]: result,
-      }))
-      requestAnimationFrame(() => {
-        sidebarScrollRefs.current[folder]?.scrollTo({ top: 0 })
-      })
-
-      const nextMessage =
-        (preserveSelection
-          ? result.items.find(
-              (item) => item.id && item.id === selectedMessageIds[folder]
-            )
-          : null) ||
-        result.items[0] ||
-        null
-
-      if (nextMessage) {
-        await openMessageDetailForMailbox(mailbox, nextMessage, folder)
-      } else {
-        setSelectedMessageIds((current) => ({ ...current, [folder]: "" }))
-        setMessageDetail(null)
-      }
-
-      return result
-    } catch (error) {
-      setMailLists((current) => ({ ...current, [folder]: null }))
-      setSelectedMessageIds((current) => ({ ...current, [folder]: "" }))
-      setMessageDetail(null)
-      notify("获取失败", formatErrorMessage(error), "destructive")
-      return null
-    } finally {
-      setFolderLoading((current) => ({ ...current, [folder]: false }))
-    }
-  }
-
-  async function activateMailbox(
-    mailbox: MailboxEntry,
-    folder: MailFolder = "inbox"
-  ) {
-    resetMailboxView(folder)
-    setCurrentEmail(mailbox.email)
-    setMobileView("messages")
-    setMobileMailboxesOpen(false)
-    return loadFolderMessages(mailbox, folder, {
-      page: 1,
-      pageSize: DEFAULT_PAGE_SIZE,
-      preserveSelection: false,
-    })
-  }
-
-  async function handleFolderChange(folder: MailFolder) {
-    setActiveFolder(folder)
-    setMessageFilter("")
-
-    if (!selectedMailbox) {
-      return
-    }
-
-    const targetList = mailLists[folder]
-    if (!targetList) {
-      await loadFolderMessages(selectedMailbox, folder, {
-        page: 1,
-        pageSize: DEFAULT_PAGE_SIZE,
-      })
-      return
-    }
-
-    const selectedSummary =
-      targetList.items.find((item) => item.id === selectedMessageIds[folder]) ||
-      targetList.items[0] ||
-      null
-
-    if (!selectedSummary) {
-      setMessageDetail(null)
-      return
-    }
-
-    if (
-      messageDetail?.id !== selectedSummary.id ||
-      messageDetail?.folder !== folder
-    ) {
-      await openMessageDetailForMailbox(selectedMailbox, selectedSummary, folder)
-    }
-  }
-
-  async function handleRefreshCurrentFolder() {
-    if (!selectedMailbox) {
-      notify(
-        "请选择邮箱",
-        "请先载入兑换码或启用临时账户。",
-        "destructive"
-      )
-      return
-    }
-
-    const currentList = mailLists[activeFolder]
-    await loadFolderMessages(selectedMailbox, activeFolder, {
-      page: currentList?.page || 1,
-      pageSize: DEFAULT_PAGE_SIZE,
-    })
-  }
-
-  async function handleFolderPageChange(folder: MailFolder, page: number) {
-    if (!selectedMailbox) {
-      return
-    }
-
-    await loadFolderMessages(selectedMailbox, folder, {
-      page,
-      pageSize: DEFAULT_PAGE_SIZE,
-      preserveSelection: false,
-    })
-  }
-
-  async function loadRedeemMailboxPage(
-    codeValue: string,
-    {
-      page = 1,
-      replaceCache = false,
-      activateFirst = false,
-      resetOnError = false,
-    }: {
-      page?: number
-      replaceCache?: boolean
-      activateFirst?: boolean
-      resetOnError?: boolean
-    } = {}
-  ) {
-    setAccountsLoading(true)
-
-    try {
-      const payload = await accessMailboxByCode(codeValue, {
-        page,
-        page_size: DEFAULT_PAGE_SIZE,
-      })
-      const nextMailboxes = payload.data.items
-        .map((item, index) =>
-          createRedeemMailboxEntry(
-            item,
-            (payload.data.page - 1) * payload.data.page_size + index
-          )
-        )
-        .filter((item): item is MailboxEntry => Boolean(item))
-
-      setRedeemAccess({
-        code: payload.data.code,
-        source: payload.data.source,
-        redeemed_at: payload.data.redeemed_at,
-      })
-      setRedeemMailboxPage({
-        items: nextMailboxes,
-        total: payload.data.total,
-        page: payload.data.page,
-        page_size: payload.data.page_size,
-      })
-      setRedeemMailboxes((current) =>
-        replaceCache ? nextMailboxes : mergeMailboxEntries(current, nextMailboxes)
-      )
-
-      if (activateFirst) {
-        const initialMailbox =
-          nextMailboxes[0] ||
-          (tempAccount?.email ? createTempMailboxEntry(tempAccount) : null)
-
-        if (initialMailbox) {
-          void activateMailbox(initialMailbox, "inbox")
-        } else {
-          resetMailboxView("inbox")
+    fetchPublicAds()
+      .then((config) => {
+        if (!cancelled && config.enabled) {
+          setAdSlot(config)
         }
-      }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAdSlot(null)
+        }
+      })
 
-      return payload.data
-    } catch (error) {
-      if (resetOnError) {
-        resetRedeemMailboxAccess()
-        resetMailboxView("inbox")
-      }
-      notify(
-        resetOnError ? "兑换码无效" : "账户列表加载失败",
-        formatErrorMessage(error),
-        "destructive"
-      )
-      return null
-    } finally {
-      setAccountsLoading(false)
+    return () => {
+      cancelled = true
     }
+  }, [])
+
+  useEffect(() => {
+    setResultPage((page) => Math.min(Math.max(1, page), totalResultPages))
+  }, [totalResultPages])
+
+  useEffect(() => {
+    setEnabledProtocols((current) => {
+      const next = current.filter((protocol) =>
+        selectedAllowedProtocols.includes(protocol)
+      )
+
+      return next.length ? next : [selectedAllowedProtocols[0] || "imap"]
+    })
+  }, [selectedAllowedProtocols.join("|")])
+
+  function replaceAccounts(updater: (current: MailAccount[]) => MailAccount[]) {
+    setAccounts((current) => {
+      const next = updater(current)
+      saveLocalAccounts(next)
+      setSelectedAccountId((currentSelected) =>
+        next.some((account) => account.id === currentSelected)
+          ? currentSelected
+          : next[0]?.id || ""
+      )
+      return next
+    })
   }
 
-  async function loadMailboxesByCode(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const nextCode = code.trim()
-    if (!nextCode) {
+  function deleteAccount(accountId: string) {
+    replaceAccounts((current) => current.filter((account) => account.id !== accountId))
+    setFetchStates((current) => current.filter((state) => state.accountId !== accountId))
+  }
+
+  function clearAccounts() {
+    replaceAccounts(() => [])
+    setFetchStates([])
+  }
+
+  function selectAccount(accountId: string) {
+    setSelectedAccountId(accountId)
+  }
+
+  function toggleEnabledProtocol(protocol: MailProtocol) {
+    if (!selectedAllowedProtocols.includes(protocol)) {
+      return
+    }
+
+    setEnabledProtocols((current) => {
+      const currentAllowed = current.filter((item) =>
+        selectedAllowedProtocols.includes(item)
+      )
+
+      if (currentAllowed.includes(protocol)) {
+        return currentAllowed.length > 1
+          ? currentAllowed.filter((item) => item !== protocol)
+          : currentAllowed
+      }
+
+      return [...currentAllowed, protocol]
+    })
+  }
+
+  async function importByCode(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault()
+    const code = redeemCode.trim()
+    if (!code) {
       notify("请输入兑换码", "兑换码不能为空。", "destructive")
       return
     }
 
-    setCodeLoading(true)
-
+    setLoadingAccounts(true)
     try {
-      setCodeDialogOpen(false)
-      const payload = await loadRedeemMailboxPage(nextCode, {
+      const firstPage = await accessMailboxByCode(code, {
         page: 1,
-        replaceCache: true,
-        activateFirst: true,
-        resetOnError: true,
+        page_size: 100,
       })
-      if (!payload) {
+      const totalPages = Math.max(1, Math.ceil(firstPage.data.total / 100))
+      const pages = [firstPage]
+
+      if (totalPages > 1) {
+        const nextPages = await Promise.all(
+          Array.from({ length: totalPages - 1 }, (_, index) =>
+            accessMailboxByCode(code, {
+              page: index + 2,
+              page_size: 100,
+            })
+          )
+        )
+        pages.push(...nextPages)
+      }
+
+      const nextAccounts = pages
+        .flatMap((page) => page.data.items)
+        .map((item, index) => accountFromRedeemedItem(item, index))
+        .filter((item): item is MailAccount => Boolean(item))
+
+      if (!nextAccounts.length) {
+        notify("没有可取件账号", "该兑换码没有解析出邮箱 OAuth 数据。", "destructive")
         return
       }
 
-      notify(
-        "邮箱已载入",
-        payload.source === "newly_redeemed"
-          ? "兑换码已自动兑换，已载入对应邮箱。"
-          : `共 ${payload.total} 个邮箱，已为你选中第一个。`
-      )
+      setAccounts((current) => mergeAccounts(current, nextAccounts))
+      setSelectedAccountId(nextAccounts[0].id)
+      setImportDialogOpen(false)
+      notify("账号已载入", `已载入 ${nextAccounts.length} 个账号。`)
+    } catch (error) {
+      notify("账号载入失败", formatErrorMessage(error), "destructive")
     } finally {
-      setCodeLoading(false)
+      setLoadingAccounts(false)
     }
   }
 
-  async function handleRedeemMailboxPageChange(page: number) {
-    if (!redeemAccess?.code || accountsLoading) {
+  function importManualAccounts(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault()
+    const lines = manualText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+
+    if (!lines.length) {
+      notify("请输入账号数据", "请按一行一个账号粘贴数据。", "destructive")
       return
     }
 
-    await loadRedeemMailboxPage(redeemAccess.code, { page })
-  }
+    const parsedAccounts: MailAccount[] = []
+    const invalidLines: number[] = []
 
-  async function applyTempAccount() {
-    const parsedAccount =
-      parseAccountLine(tempAccountForm.email) ||
-      parseAccountLine(tempAccountForm.refreshToken)
-    const nextEmail = parsedAccount?.email || tempAccountForm.email.trim()
-    const nextPassword =
-      parsedAccount?.password ?? tempAccountForm.password.trim()
-    const nextRefreshToken =
-      parsedAccount?.refresh_token || tempAccountForm.refreshToken.trim()
-    const nextClientId = parsedAccount?.client_id || ""
+    for (const [index, line] of lines.entries()) {
+      const account = parseAccountLine(line, MAIL_PROTOCOLS, "manual")
+      if (account) {
+        parsedAccounts.push(account)
+      } else {
+        invalidLines.push(index + 1)
+      }
+    }
 
-    if (!nextEmail || !nextRefreshToken) {
+    if (!parsedAccounts.length) {
       notify(
-        "临时账户不完整",
-        "邮箱和 Refresh Token 为必填项。",
+        "导入失败",
+        "只支持 用户名----密码----clientid----refreshtoken 格式。",
         "destructive"
       )
       return
     }
 
-    const nextAccount: TempMailAccount = {
-      email: nextEmail,
-      password: nextPassword,
-      client_id: nextClientId,
-      refresh_token: nextRefreshToken,
-    }
-
-    setTempAccount(nextAccount)
-    setTempAccountForm({
-      email: nextEmail,
-      password: nextPassword,
-      refreshToken: nextRefreshToken,
+    setAccounts((current) => {
+      const merged = mergeAccounts(current, parsedAccounts)
+      saveLocalAccounts(merged)
+      return merged
     })
-    sessionStorage.setItem(
-      TEMP_ACCOUNT_STORAGE_KEY,
-      JSON.stringify(nextAccount)
+    setSelectedAccountId(parsedAccounts[0].id)
+    setManualText("")
+    setImportDialogOpen(false)
+    notify(
+      "本地账号已保存",
+      invalidLines.length
+        ? `已保存 ${parsedAccounts.length} 个，跳过 ${invalidLines.length} 行格式错误数据。`
+        : `已保存 ${parsedAccounts.length} 个账号到浏览器本地。`
     )
-    setTempDialogOpen(false)
-
-    await activateMailbox(createTempMailboxEntry(nextAccount), "inbox")
-
-    notify("临时账户已启用", `${nextEmail} 已作为当前邮箱载入。`)
   }
 
-  function clearTempAccount() {
-    const nextMailboxes = buildMailboxCollection(redeemMailboxes, null)
-    const fallbackMailbox =
-      nextMailboxes.find((item) => item.email === currentEmail) ||
-      nextMailboxes[0] ||
-      null
-
-    setTempAccount(null)
-    setTempAccountForm({
-      email: "",
-      password: "",
-      refreshToken: "",
-    })
-    sessionStorage.removeItem(TEMP_ACCOUNT_STORAGE_KEY)
-    setTempDialogOpen(false)
-
-    if (fallbackMailbox) {
-      void activateMailbox(fallbackMailbox, activeFolder)
-      notify("临时账户已清除", "后续将恢复使用兑换结果中的邮箱配置。")
+  async function fetchAccount(account: MailAccount | null) {
+    if (!account) {
+      notify("请选择账号", "选择一个邮箱后再取件。", "destructive")
       return
     }
 
-    setCurrentEmail("")
-    resetMailboxView("inbox")
+    const protocols = enabledProtocols.filter((protocol) =>
+      getAccountProtocols(account).includes(protocol)
+    )
+
+    if (!protocols.length) {
+      notify("请选择协议", "当前邮箱没有启用可用的取件协议。", "destructive")
+      return
+    }
+
+    const initialStates = protocols.map((protocol): FetchState => ({
+      accountId: account.id,
+      email: account.email,
+      protocol,
+      loading: true,
+      error: "",
+      result: null,
+    }))
+
+    setFetching(true)
+    setFetchStates(initialStates)
+    setResultPage(1)
+
+    const settled = await Promise.allSettled(
+      protocols.map(async (protocol) => {
+        const result = await fetchTempMailboxMessages(
+          {
+            ...account,
+            mail_protocol: protocol,
+          },
+          {
+            folder,
+            page: 1,
+            page_size: FETCH_PAGE_SIZE,
+          }
+        )
+
+        return { protocol, result }
+      })
+    )
+
+    const nextStates = settled.map((entry, index): FetchState => {
+      const protocol = protocols[index]
+      if (entry.status === "fulfilled") {
+        return {
+          accountId: account.id,
+          email: account.email,
+          protocol,
+          loading: false,
+          error: "",
+          result: entry.value.result,
+        }
+      }
+
+      return {
+        accountId: account.id,
+        email: account.email,
+        protocol,
+        loading: false,
+        error: formatErrorMessage(entry.reason),
+        result: null,
+      }
+    })
+
+    setFetchStates(nextStates)
+    setFetching(false)
+
+    const successCount = nextStates.filter((state) => state.result).length
+    const failedCount = nextStates.length - successCount
     notify(
-      "临时账户已清除",
-      "当前没有可用邮箱，请重新载入兑换码或添加临时账户。"
+      "取件完成",
+      failedCount
+        ? `成功 ${successCount} 个协议，失败 ${failedCount} 个。`
+        : `成功取件 ${successCount} 个协议。`
     )
   }
 
-  function openAccountDetail(mailbox: MailboxEntry) {
-    setAccountDetail(mailbox)
-    setAccountDetailOpen(true)
+  async function openMessageDetail(item: ResultMessage) {
+    if (!item.message.id) {
+      return
+    }
+
+    const account = accounts.find((candidate) => candidate.id === item.accountId)
+    if (!account) {
+      notify("账号不存在", "该邮件对应的账号已被删除。", "destructive")
+      return
+    }
+
+    setDetailContext(item)
+    setMailDetail(null)
+    setDetailDialogOpen(true)
+    setLoadingDetail(true)
+
+    try {
+      const result = await fetchTempMailboxMessageDetail(
+        {
+          ...account,
+          mail_protocol: item.protocol,
+        },
+        item.message.id,
+        folder
+      )
+      setMailDetail(result.item)
+    } catch (error) {
+      notify("邮件详情获取失败", formatErrorMessage(error), "destructive")
+    } finally {
+      setLoadingDetail(false)
+    }
   }
 
-  const mailboxesPanel = (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-border/70 px-3 py-3">
-        <div className="relative">
-          <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={mailboxFilter}
-            onChange={(event) => setMailboxFilter(event.target.value)}
-            placeholder="搜索邮箱"
-            className="h-8 pl-8"
-          />
-          {mailboxFilter ? (
-            <button
-              type="button"
-              aria-label="清除搜索"
-              className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              onClick={() => setMailboxFilter("")}
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          ) : null}
-        </div>
-        <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-          <span>
-            {filteredMailboxes.length} / {accountListMailboxes.length} 个邮箱
-          </span>
-          {redeemMailboxPage ? (
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="上一页"
-                disabled={accountsLoading || redeemMailboxPage.page <= 1}
-                onClick={() =>
-                  void handleRedeemMailboxPageChange(redeemMailboxPage.page - 1)
-                }
-              >
-                ‹
-              </Button>
-              <span>
-                {redeemMailboxPage.page}/{accountListPageCount}
-              </span>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="下一页"
-                disabled={
-                  accountsLoading || redeemMailboxPage.page >= accountListPageCount
-                }
-                onClick={() =>
-                  void handleRedeemMailboxPageChange(redeemMailboxPage.page + 1)
-                }
-              >
-                ›
-              </Button>
-            </div>
-          ) : null}
-        </div>
-      </div>
+  function exportAccounts() {
+    const lines = accounts.map((account) => account.raw_line || [
+      account.email,
+      account.password,
+      account.client_id,
+      account.refresh_token,
+    ].join("----"))
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {filteredMailboxes.length ? (
-          <ul className="flex flex-col">
-            {filteredMailboxes.map((mailbox) => {
-              const isActive = mailbox.email === currentEmail
-              return (
-                <li key={mailbox.id}>
-                  <button
-                    type="button"
-                    onClick={() => void activateMailbox(mailbox, "inbox")}
-                    className={cn(
-                      "group/mailbox flex w-full items-center gap-3 border-b border-border/60 px-3 py-2.5 text-left transition last:border-b-0 hover:bg-muted/40",
-                      isActive && "bg-primary/10 hover:bg-primary/12"
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        "flex size-8 shrink-0 items-center justify-center rounded-none bg-muted font-medium text-muted-foreground",
-                        isActive && "bg-primary text-primary-foreground"
-                      )}
-                    >
-                      {mailboxInitial(mailbox)}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span
+    if (!lines.length) {
+      notify("没有可导出账号", "请先导入账号。", "destructive")
+      return
+    }
+
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = "mail-accounts.txt"
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function copyCurrentMailboxes() {
+    if (!currentMailboxText) {
+      notify("没有可复制邮箱", "请先选择邮箱账号。", "destructive")
+      return
+    }
+
+    void copyTextToClipboard(currentMailboxText, "邮箱")
+  }
+
+  function handleAccountSelect(accountId: string) {
+    selectAccount(accountId)
+    setMailboxSheetOpen(false)
+  }
+
+  return (
+    <main className="page-shell page-shell-redeem relative min-h-svh overflow-hidden text-foreground">
+      <div className="redeem-noise pointer-events-none absolute inset-0" />
+      <div className="relative mx-auto flex min-h-svh w-full max-w-7xl flex-col px-3 py-3 md:px-4">
+        <header className="mb-3 flex h-8 shrink-0 items-center justify-between">
+          <div className="flex min-w-0 items-center gap-2">
+            <MailIcon className="text-primary" />
+            <span className="truncate text-sm font-semibold">邮箱取件</span>
+            <Badge variant="secondary">{accounts.length}</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setImportDialogOpen(true)}>
+              <UploadIcon data-icon="inline-start" />
+              导入账号
+            </Button>
+            <ThemeToggle />
+          </div>
+        </header>
+
+        {adSlot ? (
+          <AdSlotCard
+            title={adSlot.title}
+            description={adSlot.description}
+            imageUrl={adSlot.image_url}
+            primaryAction={adSlot.primary_action}
+            compact
+            className="mb-3 shrink-0"
+          />
+        ) : null}
+
+        <Sheet open={mailboxSheetOpen} onOpenChange={setMailboxSheetOpen}>
+          <SheetContent side="left" className="w-[min(82vw,20rem)] p-0">
+            <SheetHeader className="border-b border-border/70 px-3 py-3">
+              <SheetTitle>邮箱列表</SheetTitle>
+            </SheetHeader>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="shrink-0 px-3 py-3">
+                <div className="flex flex-col gap-2">
+                  <Input
+                    value={accountQuery}
+                    onChange={(event) => setAccountQuery(event.target.value)}
+                    placeholder="搜索邮箱"
+                    className="h-8 text-xs"
+                  />
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <Button size="sm" onClick={() => setImportDialogOpen(true)}>
+                      <PlusIcon data-icon="inline-start" />
+                      批量导入
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={exportAccounts}>
+                      <DownloadIcon data-icon="inline-start" />
+                      导出邮箱
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+                {filteredAccounts.length ? (
+                  <div className="flex flex-col gap-1">
+                    {filteredAccounts.map((account) => {
+                      const checked = selectedAccountId === account.id
+                      return (
+                        <div
+                          key={account.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => handleAccountSelect(account.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault()
+                              handleAccountSelect(account.id)
+                            }
+                          }}
                           className={cn(
-                            "truncate text-xs font-medium text-foreground",
-                            isActive && "text-foreground"
+                            "flex min-w-0 cursor-pointer items-center gap-2 border border-border/70 bg-background/60 px-2 py-1.5 transition-colors hover:bg-muted/60",
+                            checked && "border-primary/50 bg-primary/10"
                           )}
                         >
-                          {mailbox.email}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                        <Badge
-                          variant={
-                            mailbox.sourceType === "temp" ? "default" : "outline"
-                          }
-                          className="h-4 px-1.5 text-[10px]"
-                        >
-                          {mailbox.sourceType === "temp"
-                            ? "临时"
-                            : mailbox.sourceLabel || "兑换"}
-                        </Badge>
-                      </div>
+                          <span
+                            className={cn(
+                              "flex size-4 shrink-0 items-center justify-center rounded-full border border-border bg-background",
+                              checked && "border-primary"
+                            )}
+                          >
+                            {checked ? (
+                              <span className="size-2 rounded-full bg-primary" />
+                            ) : null}
+                          </span>
+                          <div className="min-w-0 flex-1 truncate text-[11px] font-medium leading-4">
+                            {account.email}
+                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={(event) => event.stopPropagation()}
+                                aria-label={`${account.email} 操作`}
+                              >
+                                <MoreVerticalIcon />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              <DropdownMenuLabel className="truncate">
+                                {account.email}
+                              </DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuGroup>
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onSelect={() => deleteAccount(account.id)}
+                                >
+                                  <Trash2Icon />
+                                  删除账号
+                                </DropdownMenuItem>
+                              </DropdownMenuGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex h-full min-h-72 flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
+                    <InboxIcon />
+                    <p>还没有邮箱账号。</p>
+                  </div>
+                )}
+              </div>
+              <div className="shrink-0 border-t border-border/70 p-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  disabled={!accounts.length}
+                  onClick={clearAccounts}
+                >
+                  <Trash2Icon data-icon="inline-start" />
+                  清空全部
+                </Button>
+              </div>
+            </div>
+          </SheetContent>
+        </Sheet>
+
+        <section
+          className={cn(
+            "grid min-h-0 flex-1 gap-0 overflow-hidden transition-[grid-template-columns] duration-300 ease-out lg:gap-4",
+            accountsCollapsed
+              ? "lg:grid-cols-[3.25rem_minmax(0,1fr)]"
+              : "lg:grid-cols-[18rem_minmax(0,1fr)]"
+          )}
+        >
+          <Card className="hidden min-h-0 flex-col overflow-hidden border border-border/70 bg-card/97 p-0 lg:flex">
+            {!accountsCollapsed ? (
+              <>
+                <div className="shrink-0 px-2 py-2">
+                  <div className="flex flex-col gap-2">
+                    <Input
+                      value={accountQuery}
+                      onChange={(event) => setAccountQuery(event.target.value)}
+                      placeholder="搜索邮箱"
+                      className="h-8 text-xs"
+                    />
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <Button size="sm" onClick={() => setImportDialogOpen(true)}>
+                        <PlusIcon data-icon="inline-start" />
+                        批量导入
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={exportAccounts}>
+                        <DownloadIcon data-icon="inline-start" />
+                        导出邮箱
+                      </Button>
                     </div>
+                  </div>
+                </div>
+
+              </>
+            ) : null}
+
+            <CardContent className={cn("min-h-0 flex-1 overflow-y-auto", accountsCollapsed ? "p-1.5" : "p-2")}>
+              {accountsCollapsed ? (
+                <div className="flex flex-col items-center gap-1.5">
+                  {filteredAccounts.map((account) => {
+                    const checked = selectedAccountId === account.id
+                    return (
+                      <button
+                        key={account.id}
+                        type="button"
+                        title={account.email}
+                        onClick={() => selectAccount(account.id)}
+                        aria-label={`选择 ${account.email}`}
+                        className={cn(
+                          "relative flex size-8 items-center justify-center border border-border/70 bg-background/70 text-xs font-semibold transition-colors",
+                          checked && "border-primary/60 bg-primary/12 text-primary"
+                        )}
+                      >
+                        {account.email.slice(0, 1).toUpperCase()}
+                        {checked ? (
+                          <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-primary" />
+                        ) : null}
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : filteredAccounts.length ? (
+                <div className="flex flex-col gap-1">
+                  {filteredAccounts.map((account) => {
+                    const checked = selectedAccountId === account.id
+                    return (
+                      <div
+                        key={account.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => selectAccount(account.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault()
+                            selectAccount(account.id)
+                          }
+                        }}
+                        className={cn(
+                          "flex min-w-0 cursor-pointer items-center gap-2 border border-border/70 bg-background/60 px-2 py-1.5 transition-colors hover:bg-muted/60",
+                          checked && "border-primary/50 bg-primary/10"
+                        )}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => selectAccount(account.id)}
+                          aria-label="选择邮箱"
+                          className={cn(
+                            "flex size-4 shrink-0 items-center justify-center rounded-full border border-border bg-background",
+                            checked && "border-primary"
+                          )}
+                        >
+                          {checked ? (
+                            <span className="size-2 rounded-full bg-primary" />
+                          ) : null}
+                        </button>
+
+                        <>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[11px] font-medium leading-4">
+                              {account.email}
+                            </div>
+                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={(event) => event.stopPropagation()}
+                                aria-label={`${account.email} 操作`}
+                              >
+                                <MoreVerticalIcon />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              <DropdownMenuLabel className="truncate">
+                                {account.email}
+                              </DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuGroup>
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onSelect={() => deleteAccount(account.id)}
+                                >
+                                  <Trash2Icon />
+                                  删除账号
+                                </DropdownMenuItem>
+                              </DropdownMenuGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="flex h-full min-h-72 flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
+                  <InboxIcon />
+                  {!accountsCollapsed ? (
+                    <>
+                      <p>还没有邮箱账号。</p>
+                      <Button variant="outline" size="sm" onClick={() => setImportDialogOpen(true)}>
+                        <PlusIcon data-icon="inline-start" />
+                        导入账号
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
+              )}
+            </CardContent>
+
+            {!accountsCollapsed ? (
+              <div className="shrink-0 border-t border-border/70 p-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  disabled={!accounts.length}
+                  onClick={clearAccounts}
+                >
+                  <Trash2Icon data-icon="inline-start" />
+                  清空全部
+                </Button>
+              </div>
+            ) : null}
+          </Card>
+
+          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+            <Card className="w-full shrink-0 border border-border/70 bg-card/97">
+              <CardContent className="px-2 py-0.5">
+                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                  <div className="flex items-center gap-2">
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      className="opacity-0 transition-opacity group-hover/mailbox:opacity-100 data-[state=open]:opacity-100"
-                      aria-label="更多"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        openAccountDetail(mailbox)
+                      className="lg:hidden"
+                      aria-label="打开邮箱列表"
+                      onClick={() => setMailboxSheetOpen(true)}
+                    >
+                      <MenuIcon />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="hidden lg:inline-flex"
+                      aria-label={accountsCollapsed ? "展开账号列表" : "折叠账号列表"}
+                      onClick={() => setAccountsCollapsed((value) => !value)}
+                    >
+                      <MenuIcon />
+                    </Button>
+                    <div className="flex items-center gap-1.5">
+                      {MAIL_PROTOCOLS.map((protocol) => {
+                        const disabled = !selectedAllowedProtocols.includes(protocol)
+                        const enabled = !disabled && enabledProtocols.includes(protocol)
+
+                        return (
+                          <button
+                            key={protocol}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => toggleEnabledProtocol(protocol)}
+                            aria-pressed={enabled}
+                            title={
+                              disabled
+                                ? `当前邮箱不支持 ${protocolLabel(protocol)}`
+                                : `${enabled ? "停用" : "启用"} ${protocolLabel(protocol)}`
+                            }
+                          >
+                            <Badge
+                              variant={enabled ? "default" : "outline"}
+                              className={cn(
+                                "h-6 cursor-pointer gap-1 border px-2.5 text-xs transition-colors",
+                                enabled && "border-primary bg-primary text-primary-foreground",
+                                disabled && "cursor-not-allowed opacity-40"
+                              )}
+                            >
+                              {enabled ? <CheckIcon /> : null}
+                              {protocolLabel(protocol)}
+                            </Badge>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Select
+                      value={folder}
+                      onValueChange={(value) =>
+                        setFolder(value === "spam" ? "spam" : "inbox")
+                      }
+                    >
+                      <SelectTrigger className="h-6 w-24 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="inbox">收件箱</SelectItem>
+                          <SelectItem value="spam">垃圾箱</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="xs"
+                      disabled={fetching || !selectedAccount || !selectedEnabledProtocols.length}
+                      onClick={() => {
+                        if (selectedAccount) {
+                          void fetchAccount(selectedAccount)
+                        }
                       }}
                     >
-                      <EllipsisVerticalIcon />
+                      {fetching ? (
+                        <Loader2Icon data-icon="inline-start" className="animate-spin" />
+                      ) : (
+                        <DownloadIcon data-icon="inline-start" />
+                      )}
+                      取件
                     </Button>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-4 py-10 text-center text-xs text-muted-foreground">
-            {accountListMailboxes.length ? (
-              <p>没有匹配「{mailboxFilter}」的邮箱</p>
-            ) : (
-              <>
-                <InboxIcon className="size-8 text-muted-foreground/60" />
-                <p>还没有邮箱，先载入一个兑换码或添加临时账户。</p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setCodeDialogOpen(true)}
-                  >
-                    <KeyRoundIcon data-icon="inline-start" />
-                    兑换码
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setTempDialogOpen(true)}
-                  >
-                    <UserRoundPlusIcon data-icon="inline-start" />
-                    临时账户
-                  </Button>
+                  </div>
                 </div>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+              </CardContent>
+            </Card>
 
-      <div className="shrink-0 border-t border-border/70 p-2">
-        <div className="flex gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1"
-            onClick={() => setCodeDialogOpen(true)}
-          >
-            <KeyRoundIcon data-icon="inline-start" />
-            兑换码
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1"
-            onClick={() => setTempDialogOpen(true)}
-          >
-            <UserRoundPlusIcon data-icon="inline-start" />
-            临时账户
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-
-  const messagesPanel = (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-border/70 px-3 pt-2 pb-1.5 md:pt-3 md:pb-2">
-        <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <p className="truncate text-xs font-medium text-foreground">
-                {selectedMailbox?.email || "未选择邮箱"}
-              </p>
-              {selectedMailbox ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
+            <Card className="mt-2 gap-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border/70 bg-card/97 ">
+              <CardHeader className="flex shrink-0 flex-row items-center justify-between gap-2 border-b border-border/70">
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex items-center">
+                    <span className="truncate">{currentMailboxLabel}</span>
                     <Button
                       variant="ghost"
-                      size="icon-xs"
+                      size="icon-sm"
+                      className="shrink-0"
+                      disabled={!currentMailboxText}
+                      onClick={copyCurrentMailboxes}
                       aria-label="复制邮箱"
-                      onClick={() =>
-                        void copyTextToClipboard(selectedMailbox.email, "邮箱")
-                      }
                     >
                       <CopyIcon />
                     </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>复制邮箱</TooltipContent>
-                </Tooltip>
-              ) : null}
-            </div>
-          </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="刷新当前文件夹"
-                disabled={!selectedMailbox || activeFolderLoading}
-                onClick={() => void handleRefreshCurrentFolder()}
-              >
-                <RefreshCcwIcon
-                  className={cn(activeFolderLoading && "animate-spin")}
-                />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>刷新</TooltipContent>
-          </Tooltip>
-        </div>
-
-        <Tabs
-          value={activeFolder}
-          onValueChange={(value) => void handleFolderChange(value as MailFolder)}
-          className="mt-2"
-        >
-          <TabsList variant="line" className="w-full justify-start">
-            <TabsTrigger value="inbox">
-              <InboxIcon />
-              收件箱
-              <span className="text-muted-foreground">
-                {mailLists.inbox?.total ?? "·"}
-              </span>
-            </TabsTrigger>
-            <TabsTrigger value="spam">
-              <ShieldAlertIcon />
-              垃圾箱
-              <span className="text-muted-foreground">
-                {mailLists.spam?.total ?? "·"}
-              </span>
-            </TabsTrigger>
-          </TabsList>
-          <TabsContent value="inbox" className="hidden" />
-          <TabsContent value="spam" className="hidden" />
-        </Tabs>
-
-        <div className="relative mt-2">
-          <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={messageFilter}
-            onChange={(event) => setMessageFilter(event.target.value)}
-            placeholder="搜索当前文件夹"
-            className="h-8 pl-8"
-            disabled={!selectedMailbox}
-          />
-          {messageFilter ? (
-            <button
-              type="button"
-              aria-label="清除搜索"
-              className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              onClick={() => setMessageFilter("")}
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <div
-        ref={(node) => {
-          sidebarScrollRefs.current[activeFolder] = node
-        }}
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
-        {activeFolderLoading ? (
-          <div className="flex flex-col">
-            {Array.from({ length: 5 }).map((_, index) => (
-              <div
-                key={index}
-                className="border-b border-border/60 px-3 py-3 last:border-b-0"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <Skeleton className="h-3 w-1/3" />
-                  <Skeleton className="h-3 w-10" />
+                  </div>
+                  <Badge variant="secondary">共 {resultMessages.length} 封</Badge>
                 </div>
-                <Skeleton className="mt-2 h-3.5 w-3/4" />
-                <Skeleton className="mt-1.5 h-3 w-full" />
-              </div>
-            ))}
-          </div>
-        ) : !selectedMailbox ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-muted-foreground">
-            <MailIcon className="size-8 text-muted-foreground/60" />
-            <p>选择一个邮箱开始查看邮件。</p>
-          </div>
-        ) : filteredMessages.length ? (
-          <ul className="flex flex-col">
-            {filteredMessages.map((message) => {
-              const from = resolveMailAddress(
-                message.sender?.emailAddress || message.from?.emailAddress
-              )
-              const isActive = selectedMessageIds[activeFolder] === message.id
+              </CardHeader>
 
-              return (
-                <li key={`${activeFolder}-${message.id}`}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!selectedMailbox) {
-                        return
-                      }
-                      void openMessageDetailForMailbox(
-                        selectedMailbox,
-                        message,
-                        activeFolder
-                      )
-                    }}
-                    className={cn(
-                      "relative flex w-full flex-col gap-1 border-b border-border/60 px-3 py-2.5 text-left transition last:border-b-0 hover:bg-muted/40",
-                      isActive && "bg-muted"
-                    )}
-                  >
-                    {isActive ? (
-                      <span className="absolute top-0 bottom-0 left-0 w-[2px] bg-primary" />
-                    ) : null}
-                    <div className="flex items-start justify-between gap-3">
-                      <span className="truncate text-xs font-medium text-foreground">
-                        {from.name}
-                      </span>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {formatMailDate(message.receivedDateTime)}
-                      </span>
+              <CardContent className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-1.5">
+                {fetching ? (
+                  <div className="flex flex-col gap-1">
+                    {Array.from({ length: 6 }).map((_, index) => (
+                      <Skeleton key={index} className="h-11 w-full" />
+                    ))}
+                  </div>
+                ) : pagedMessages.length || failedFetchStates.length ? (
+                  <div className="min-w-0 overflow-hidden border border-border/70 bg-background/60">
+                    {failedFetchStates.map((state) => (
+                      <div
+                        key={`${state.accountId}-error`}
+                        className="min-w-0 border-b border-destructive/30 px-2 py-1 text-xs last:border-b-0"
+                      >
+                        <div className="truncate font-medium text-destructive">
+                          {state.email} {protocolLabel(state.protocol)} 取件失败
+                        </div>
+                        <div className="mt-0.5 break-words text-[11px] text-muted-foreground">
+                          {state.error}
+                        </div>
+                      </div>
+                    ))}
+
+                    {pagedMessages.map((item) => (
+                      <article
+                        key={item.key}
+                        className="min-w-0 cursor-pointer border-b border-border/70 px-2 py-1 transition-colors last:border-b-0 hover:bg-muted/60"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => void openMessageDetail(item)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault()
+                            void openMessageDetail(item)
+                          }
+                        }}
+                      >
+                        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_5.25rem] items-center gap-x-2 gap-y-0.5 sm:grid-cols-[minmax(8rem,1fr)_minmax(10rem,1.6fr)_7rem] sm:gap-2">
+                          <div className="order-3 col-span-2 min-w-0 sm:order-none sm:col-span-1">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <span className="truncate text-[11px] font-medium text-muted-foreground">
+                                {resolveAddress(item.message)}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                              {item.email}
+                            </div>
+                          </div>
+                          <div className="order-1 min-w-0 sm:order-none">
+                            <h2 className="truncate text-xs font-semibold">
+                              {item.message.subject || "(无主题)"}
+                            </h2>
+                            {item.message.bodyPreview ? (
+                              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                                {item.message.bodyPreview}
+                              </p>
+                            ) : null}
+                          </div>
+                          <time className="order-2 justify-self-end truncate text-[11px] text-muted-foreground sm:order-none">
+                            {formatDateTime(item.message.receivedDateTime)}
+                          </time>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex h-full min-h-96 flex-col items-center justify-center gap-3 border border-border/70 bg-background/60 text-center text-sm text-muted-foreground">
+                    <InboxIcon />
+                    <div>
+                      <div className="font-medium text-foreground">暂无取件结果</div>
+                      <div className="mt-1 text-xs">
+                        选择协议 tag，选择邮箱后点击取件。
+                      </div>
                     </div>
-                    <span className="truncate text-xs text-foreground/90">
-                      {message.subject || "(无主题)"}
-                    </span>
-                    <span className="line-clamp-2 text-xs text-muted-foreground">
-                      {message.bodyPreview || "暂无摘要"}
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-muted-foreground">
-            {currentMailList?.items.length ? (
-              <p>没有匹配「{messageFilter}」的邮件</p>
-            ) : (
-              <>
-                <MailIcon className="size-8 text-muted-foreground/60" />
-                <p>
-                  {formatFolderLabel(activeFolder)}为空，试试点击刷新。
-                </p>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+                  </div>
+                )}
+              </CardContent>
+              <div className="flex shrink-0 items-center justify-end gap-1 border-t border-border/70 px-2 py-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={resultPage <= 1}
+                  onClick={() => setResultPage((page) => Math.max(1, page - 1))}
+                >
+                  上一页
+                </Button>
+                <span className="min-w-14 text-center text-[11px] text-muted-foreground">
+                  {resultPage}/{totalResultPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={resultPage >= totalResultPages}
+                  onClick={() =>
+                    setResultPage((page) => Math.min(totalResultPages, page + 1))
+                  }
+                >
+                  下一页
+                </Button>
+              </div>
+            </Card>
+          </section>
+        </section>
 
-      {currentMailList ? (
-        <div className="shrink-0 border-t border-border/70 px-3 py-2 text-xs text-muted-foreground">
-          <div className="flex items-center justify-between gap-2">
-            <span>
-              第 {currentMailList.page} /{" "}
-              {Math.max(
-                Math.ceil(currentMailList.total / DEFAULT_PAGE_SIZE),
-                1
-              )}{" "}
-              页 · 共 {currentMailList.total} 封
-            </span>
-            <div className="flex gap-1">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={
-                  !selectedMailbox ||
-                  activeFolderLoading ||
-                  currentMailList.page <= 1
-                }
-                onClick={() =>
-                  void handleFolderPageChange(
-                    activeFolder,
-                    currentMailList.page - 1
-                  )
-                }
+        <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
+          <DialogContent className="flex max-h-[min(92svh,34rem)] w-[min(96vw,42rem)] max-w-[min(96vw,42rem)] flex-col overflow-hidden p-0 sm:max-w-[min(96vw,42rem)]">
+            <DialogHeader className="border-b border-border/70 px-5 py-4">
+              <DialogTitle>账号导入</DialogTitle>
+              <DialogDescription>
+                通过同一个入口载入兑换码账号或临时账号；本地账号只保存到当前浏览器。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 py-4">
+              <Tabs
+                value={importMode}
+                onValueChange={(value) => setImportMode(value as "code" | "manual")}
+                className="min-w-0"
               >
-                上一页
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={
-                  !selectedMailbox ||
-                  activeFolderLoading ||
-                  currentMailList.page >=
-                    Math.max(
-                      Math.ceil(currentMailList.total / DEFAULT_PAGE_SIZE),
-                      1
+                <TabsList variant="line">
+                  <TabsTrigger value="manual">临时账号</TabsTrigger>
+                  <TabsTrigger value="code">兑换码账号</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="manual" className="min-w-0 pt-4">
+                  <form className="flex flex-col gap-4" onSubmit={importManualAccounts}>
+                    <Field>
+                      <FieldLabel htmlFor="manual-accounts">临时账号数据</FieldLabel>
+                      <FieldContent className="min-w-0">
+                        <Textarea
+                          id="manual-accounts"
+                          value={manualText}
+                          onChange={(event) => setManualText(event.target.value)}
+                          rows={8}
+                          placeholder="username@example.com----password----clientid----refreshtoken"
+                          wrap="off"
+                          spellCheck={false}
+                          className="h-32 max-h-48 min-h-32 w-full max-w-full resize-y overflow-auto whitespace-pre font-mono leading-5 [field-sizing:fixed]"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          只支持 用户名----密码----clientid----refreshtoken 格式，一行一个账号。
+                        </p>
+                      </FieldContent>
+                    </Field>
+                    <DialogFooter className="px-0">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setImportDialogOpen(false)}
+                      >
+                        取消
+                      </Button>
+                      <Button type="submit">保存到本地</Button>
+                    </DialogFooter>
+                  </form>
+                </TabsContent>
+
+                <TabsContent value="code" className="pt-4">
+                  <form className="flex flex-col gap-4" onSubmit={importByCode}>
+                    <Field>
+                      <FieldLabel htmlFor="mail-code">兑换码</FieldLabel>
+                      <FieldContent>
+                        <Input
+                          id="mail-code"
+                          value={redeemCode}
+                          onChange={(event) => setRedeemCode(event.target.value)}
+                          placeholder="输入已兑换或待兑换卡密"
+                        />
+                      </FieldContent>
+                    </Field>
+                    <DialogFooter className="px-0">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setImportDialogOpen(false)}
+                      >
+                        取消
+                      </Button>
+                      <Button type="submit" disabled={loadingAccounts}>
+                        {loadingAccounts ? (
+                          <Loader2Icon data-icon="inline-start" className="animate-spin" />
+                        ) : (
+                          <SearchIcon data-icon="inline-start" />
+                        )}
+                        载入账号
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                </TabsContent>
+              </Tabs>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>
+          <DialogContent className="flex h-[min(92svh,42rem)] max-h-[min(92svh,42rem)] w-[min(96vw,54rem)] max-w-[min(96vw,54rem)] flex-col overflow-hidden p-0 sm:max-w-[min(96vw,54rem)]">
+            <DialogHeader className="border-b border-border/70 px-6 py-4">
+              <DialogTitle className="line-clamp-2 pr-6 text-base">
+                {mailDetail?.subject || detailContext?.message.subject || "(无主题)"}
+              </DialogTitle>
+              <DialogDescription className="flex flex-wrap items-center gap-x-4 gap-y-1 pr-6">
+                {detailContext
+                  ? (
+                      <>
+                        <span className="min-w-0 truncate">
+                          发件人：{resolveAddress(mailDetail || detailContext.message)}
+                        </span>
+                        <span>
+                          时间：{formatDateTime(
+                            mailDetail?.receivedDateTime ||
+                              detailContext.message.receivedDateTime
+                          )}
+                        </span>
+                        <span className="min-w-0 truncate">
+                          收件账号：{detailContext.email}
+                        </span>
+                        <span>{folder === "spam" ? "垃圾箱" : "收件箱"}</span>
+                      </>
                     )
-                }
-                onClick={() =>
-                  void handleFolderPageChange(
-                    activeFolder,
-                    currentMailList.page + 1
-                  )
-                }
-              >
-                下一页
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
-
-  const detailPanel = (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border/70 px-4 py-2.5 md:hidden">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="返回邮件列表"
-          onClick={() => setMobileView("messages")}
-        >
-          <ArrowLeftIcon />
-        </Button>
-        <p className="truncate text-xs text-muted-foreground">
-          {selectedMailbox?.email} · {formatFolderLabel(activeFolder)}
-        </p>
-      </div>
-
-      {detailLoading ? (
-        <div className="flex flex-col gap-5 px-6 py-6">
-          <Skeleton className="h-7 w-2/3" />
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <Skeleton className="size-10 rounded-full" />
-              <div className="space-y-2">
-                <Skeleton className="h-3.5 w-32" />
-                <Skeleton className="h-3 w-48" />
-              </div>
-            </div>
-            <Skeleton className="h-3.5 w-24" />
-          </div>
-          <Skeleton className="h-80 w-full" />
-        </div>
-      ) : messageDetail ? (
-        <article className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="shrink-0 px-4 pt-4 pb-3 md:px-6 md:pt-5 md:pb-4">
-            <h2 className="font-heading text-base font-medium tracking-tight text-foreground sm:text-lg">
-              {messageDetail.subject || "(无主题)"}
-            </h2>
-            <div className="mt-4 flex items-start gap-3">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
-                {(sender.name || sender.address || "?")
-                  .slice(0, 1)
-                  .toUpperCase()}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-medium text-foreground">
-                      {sender.name}
-                    </p>
-                    {sender.address && sender.address !== sender.name ? (
-                      <p className="truncate text-xs text-muted-foreground">
-                        {sender.address}
-                      </p>
-                    ) : null}
-                  </div>
-                  <p className="shrink-0 text-xs text-muted-foreground">
-                    {formatDetailMailDate(messageDetail.receivedDateTime)}
-                  </p>
-                </div>
-                {recipients !== "未知收件人" ? (
-                  <p className="mt-1.5 truncate text-xs text-muted-foreground">
-                    发送给 {recipients}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          </div>
-
-          <Separator />
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-5">
-            {isHtmlContent ? (
-              <MailHtmlContent html={sanitizedBody} />
-            ) : (
-              <div className="text-sm leading-7 whitespace-pre-wrap break-words text-foreground">
-                {bodyContent || "(无内容)"}
-              </div>
-            )}
-          </div>
-        </article>
-      ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-xs text-muted-foreground">
-          <MailIcon className="size-10 text-muted-foreground/60" />
-          <p className="max-w-xs">
-            {selectedMailbox
-              ? "选择一封邮件查看正文。"
-              : "先载入兑换码或添加临时账户，再选择邮件查看。"}
-          </p>
-        </div>
-      )}
-    </div>
-  )
-
-  return (
-    <main className="page-shell page-shell-mail relative flex h-svh flex-col overflow-hidden font-sans">
-      <div className="redeem-noise pointer-events-none absolute inset-0 opacity-60" />
-
-      <header className="relative z-10 shrink-0 border-b border-border/70 bg-background/70 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-[104rem] items-center gap-2 px-3 py-2 sm:px-4 md:py-2.5 md:px-6">
-          <div className="flex items-center gap-2">
-            <MailIcon className="size-4 text-primary" />
-            <span className="font-heading text-sm font-medium">Mail</span>
-          </div>
-
-          <div className="ml-2 hidden min-w-0 flex-1 items-center gap-2 md:flex">
-            {selectedMailbox ? (
-              <>
-                <Badge variant="outline" className="h-5">
-                  {selectedMailbox.sourceType === "temp"
-                    ? "临时"
-                    : selectedMailbox.sourceLabel || "兑换"}
-                </Badge>
-                <p className="truncate text-xs text-foreground/80">
-                  {selectedMailbox.email}
-                </p>
-              </>
-            ) : (
-              <p className="truncate text-xs text-muted-foreground">
-                未选择邮箱
-              </p>
-            )}
-          </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            className="ml-auto md:hidden"
-            onClick={() => setMobileMailboxesOpen(true)}
-          >
-            <InboxIcon data-icon="inline-start" />
-            邮箱
-            {accountListMailboxes.length ? (
-              <span className="text-muted-foreground">
-                {accountListMailboxes.length}
-              </span>
-            ) : null}
-          </Button>
-
-          <div className="hidden items-center gap-1 md:flex">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="刷新"
-                  disabled={!selectedMailbox || activeFolderLoading}
-                  onClick={() => void handleRefreshCurrentFolder()}
-                >
-                  <RefreshCcwIcon
-                    className={cn(activeFolderLoading && "animate-spin")}
-                  />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>刷新当前文件夹</TooltipContent>
-            </Tooltip>
-          </div>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label="更多操作">
-                <EllipsisVerticalIcon />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>账户管理</DropdownMenuLabel>
-              <DropdownMenuItem onSelect={() => setCodeDialogOpen(true)}>
-                <KeyRoundIcon />
-                载入兑换码
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setTempDialogOpen(true)}>
-                <UserRoundPlusIcon />
-                {tempAccount ? "编辑临时账户" : "添加临时账户"}
-              </DropdownMenuItem>
-              {selectedMailbox ? (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onSelect={() => openAccountDetail(selectedMailbox)}
-                  >
-                    查看当前邮箱配置
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() =>
-                      void copyTextToClipboard(selectedMailbox.email, "邮箱")
-                    }
-                  >
-                    <CopyIcon />
-                    复制邮箱地址
-                  </DropdownMenuItem>
-                </>
-              ) : null}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
-                <a href="/redeem">前往兑换页</a>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <ThemeToggle />
-        </div>
-
-        {adSlot?.enabled ? (
-          <div className="mx-auto hidden w-full max-w-[104rem] px-3 pb-3 sm:px-4 md:block md:px-6">
-            <AdSlotCard
-              title={adSlot.title}
-              description={adSlot.description}
-              imageUrl={adSlot.image_url}
-              primaryAction={
-                adSlot.primary_action.href
-                  ? {
-                      label: adSlot.primary_action.label,
-                      href: adSlot.primary_action.href,
-                    }
-                  : undefined
-              }
-            />
-          </div>
-        ) : null}
-      </header>
-
-      <section className="relative z-10 mx-auto flex w-full max-w-[104rem] min-h-0 flex-1 gap-0 overflow-hidden px-0 md:px-3 md:py-3 lg:px-6">
-        {/* Desktop three-pane layout */}
-        <div className="hidden w-full min-h-0 border border-border/70 bg-card/97 md:flex">
-          <div className={cn(
-            "min-h-0 shrink-0 border-r border-border/70 transition-[width] duration-200",
-            sidebarCollapsed ? "w-10" : "w-64 lg:w-72"
-          )}>
-            {sidebarCollapsed ? (
-              <div className="flex h-full flex-col items-center py-2">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="展开邮箱列表"
-                  onClick={() => setSidebarCollapsed(false)}
-                >
-                  <PanelLeftOpenIcon />
-                </Button>
-              </div>
-            ) : (
-              <div className="flex h-full min-h-0 flex-col">
-                <div className="flex shrink-0 items-center justify-end px-2 pt-2">
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="折叠邮箱列表"
-                    onClick={() => setSidebarCollapsed(true)}
-                  >
-                    <PanelLeftCloseIcon />
-                  </Button>
-                </div>
-                <div className="min-h-0 flex-1">
-                  {mailboxesPanel}
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="min-h-0 w-64 shrink-0 border-r border-border/70 lg:w-80">
-            {messagesPanel}
-          </div>
-          <div className="min-h-0 flex-1">{detailPanel}</div>
-        </div>
-
-        {/* Mobile stacked views */}
-        <div className="flex w-full min-h-0 flex-col md:hidden">
-          {mobileView === "detail" ? (
-            <div className="min-h-0 flex-1 bg-card/97">
-              {detailPanel}
-            </div>
-          ) : (
-            <div className="min-h-0 flex-1 bg-card/97">
-              {messagesPanel}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* Mobile: mailboxes drawer */}
-      <Sheet open={mobileMailboxesOpen} onOpenChange={setMobileMailboxesOpen}>
-        <SheetContent side="left" className="w-[min(88vw,22rem)] p-0">
-          <SheetHeader className="border-b border-border/70">
-            <SheetTitle>邮箱</SheetTitle>
-            <SheetDescription>
-              选择一个邮箱打开，或添加新的兑换码/临时账户。
-            </SheetDescription>
-          </SheetHeader>
-          <div className="flex min-h-0 flex-1 overflow-hidden">
-            {mailboxesPanel}
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      {/* Code dialog */}
-      <Dialog open={codeDialogOpen} onOpenChange={setCodeDialogOpen}>
-        <DialogContent className="max-w-[min(96vw,30rem)] p-0 sm:max-w-[min(96vw,30rem)]">
-          <DialogHeader className="border-b border-border/70 px-5 py-4">
-            <DialogTitle>载入兑换码</DialogTitle>
-            <DialogDescription>
-              输入兑换码即可载入对应邮箱，并自动选中第一个。
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="flex max-h-[min(72svh,22rem)] min-h-0 flex-col"
-            onSubmit={loadMailboxesByCode}
-          >
-            <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-4">
-              <FieldGroup>
-                <Field>
-                  <FieldLabel htmlFor="mail-code">兑换码</FieldLabel>
-                  <FieldContent>
-                    <Input
-                      id="mail-code"
-                      value={code}
-                      onChange={(event) => setCode(event.target.value)}
-                      placeholder="输入兑换码载入邮箱"
-                      autoComplete="off"
-                      autoFocus
-                    />
-                  </FieldContent>
-                </Field>
-              </FieldGroup>
-            </div>
-            <DialogFooter className="border-t border-border/70 px-5 py-4">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setCodeDialogOpen(false)}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={codeLoading}>
-                <KeyRoundIcon data-icon="inline-start" />
-                {codeLoading ? "载入中..." : "载入邮箱"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Account detail dialog */}
-      <Dialog open={accountDetailOpen} onOpenChange={setAccountDetailOpen}>
-        <DialogContent className="max-w-[min(96vw,40rem)] p-0 sm:max-w-[min(96vw,40rem)]">
-          <DialogHeader className="border-b border-border/70 px-5 py-4">
-            <DialogTitle>邮箱配置</DialogTitle>
-            <DialogDescription>
-              查看当前邮箱的格式化信息与原始配置。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex max-h-[min(84svh,40rem)] min-h-0 flex-col gap-5 overflow-y-auto px-5 py-4">
-            <FieldGroup>
-              <Field>
-                <FieldLabel>邮箱</FieldLabel>
-                <FieldContent>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      value={accountDetail?.email || ""}
-                      readOnly
-                      className="flex-1"
-                    />
-                    {accountDetail?.email ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          void copyTextToClipboard(accountDetail.email, "邮箱")
-                        }
-                      >
-                        <CopyIcon data-icon="inline-start" />
-                        复制
-                      </Button>
-                    ) : null}
-                  </div>
-                </FieldContent>
-              </Field>
-              <Field>
-                <FieldLabel>密码</FieldLabel>
-                <FieldContent>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      value={accountDetail?.password || ""}
-                      readOnly
-                      className="flex-1"
-                    />
-                    {accountDetail?.password ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          void copyTextToClipboard(accountDetail.password, "密码")
-                        }
-                      >
-                        <CopyIcon data-icon="inline-start" />
-                        复制
-                      </Button>
-                    ) : null}
-                  </div>
-                </FieldContent>
-              </Field>
-              <Field>
-                <FieldLabel>Client ID</FieldLabel>
-                <FieldContent>
-                  <Input value={accountDetail?.clientId || ""} readOnly />
-                </FieldContent>
-              </Field>
-              <Field>
-                <FieldLabel>Refresh Token</FieldLabel>
-                <FieldContent>
-                  <Textarea
-                    rows={4}
-                    value={accountDetail?.refreshToken || ""}
-                    readOnly
-                  />
-                </FieldContent>
-              </Field>
-              <Field>
-                <FieldLabel>原始数据</FieldLabel>
-                <FieldContent>
-                  <Textarea
-                    rows={4}
-                    value={accountDetail?.rawLine || ""}
-                    readOnly
-                  />
-                </FieldContent>
-              </Field>
-            </FieldGroup>
-          </div>
-          <DialogFooter className="border-t border-border/70 px-5 py-4">
-            <Button type="button" onClick={() => setAccountDetailOpen(false)}>
-              关闭
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Temp account dialog */}
-      <Dialog open={tempDialogOpen} onOpenChange={setTempDialogOpen}>
-        <DialogContent className="max-w-[min(96vw,40rem)] p-0 sm:max-w-[min(96vw,40rem)]">
-          <DialogHeader className="border-b border-border/70 px-5 py-4">
-            <DialogTitle>临时账户</DialogTitle>
-            <DialogDescription>
-              仅保存在当前浏览器会话内，不会写入服务器数据库。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex max-h-[min(84svh,40rem)] min-h-0 flex-col gap-5 overflow-y-auto px-5 py-4">
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="temp-email">邮箱地址或整行配置</FieldLabel>
-                <FieldContent>
-                  <Input
-                    id="temp-email"
-                    value={tempAccountForm.email}
-                    onChange={(event) =>
-                      setTempAccountForm((current) => ({
-                        ...current,
-                        email: event.target.value,
-                      }))
-                    }
-                    placeholder="可直接粘贴 email----password----client_id----refresh_token"
-                  />
-                </FieldContent>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="temp-password">密码</FieldLabel>
-                <FieldContent>
-                  <Input
-                    id="temp-password"
-                    type="password"
-                    autoComplete="current-password"
-                    value={tempAccountForm.password}
-                    onChange={(event) =>
-                      setTempAccountForm((current) => ({
-                        ...current,
-                        password: event.target.value,
-                      }))
-                    }
-                    placeholder="可选"
-                  />
-                </FieldContent>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="temp-refresh-token">
-                  Refresh Token
-                </FieldLabel>
-                <FieldContent>
-                  <Textarea
-                    id="temp-refresh-token"
-                    rows={4}
-                    value={tempAccountForm.refreshToken}
-                    onChange={(event) =>
-                      setTempAccountForm((current) => ({
-                        ...current,
-                        refreshToken: event.target.value,
-                      }))
-                    }
-                    placeholder="请输入 Refresh Token，或直接粘贴整行配置"
-                  />
-                </FieldContent>
-              </Field>
-            </FieldGroup>
-          </div>
-          <DialogFooter className="border-t border-border/70 px-5 py-4">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setTempDialogOpen(false)}
+                  : "邮件详情"}
+              </DialogDescription>
+            </DialogHeader>
+            <div
+              className={cn(
+                "min-h-0 flex-1",
+                detailBodyIsHtml
+                  ? "overflow-hidden px-0 py-0"
+                  : "overflow-y-auto px-6 py-5"
+              )}
             >
-              取消
-            </Button>
-            {tempAccount ? (
-              <Button type="button" variant="outline" onClick={clearTempAccount}>
-                清除
-              </Button>
-            ) : null}
-            <Button type="button" onClick={() => void applyTempAccount()}>
-              保存并使用
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {loadingDetail ? (
+                <div className="flex flex-col gap-3">
+                  <Skeleton className="h-5 w-2/3" />
+                  <Skeleton className="h-4 w-1/2" />
+                  <Skeleton className="h-80 w-full" />
+                </div>
+              ) : (
+                <div
+                  className={cn(
+                    "min-h-0 bg-background/40",
+                    detailBodyIsHtml && "h-full"
+                  )}
+                >
+                  {renderBody(mailDetail)}
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
     </main>
   )
 }

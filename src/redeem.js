@@ -40,6 +40,7 @@ const DEFAULT_FIELD_SCHEMA = [
 ];
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export const MAIL_PROTOCOLS = ["imap", "graph"];
 
 function safeJsonParse(value, fallback) {
   try {
@@ -74,6 +75,11 @@ function toBoolean(value, fallback = true) {
   return fallback;
 }
 
+export function normalizeMailProtocol(value, fallback = "imap") {
+  const normalized = String(value || fallback || "imap").trim().toLowerCase();
+  return MAIL_PROTOCOLS.includes(normalized) ? normalized : "imap";
+}
+
 function normalizeFieldKey(value, index) {
   const fallbackKey = `field_${index + 1}`;
   const normalized = String(value || fallbackKey)
@@ -89,6 +95,7 @@ export const DEFAULT_REDEEM_EMAIL_TYPE = {
   slug: "outlook-oauth",
   name: "Outlook OAuth 邮箱",
   description: "默认邮箱兑换类型，按整行数据保存，兼容 Outlook OAuth 四段配置。",
+  mail_protocol: "imap",
   import_delimiter: "----",
   is_active: true,
   field_schema: RAW_LINE_FIELD_SCHEMA
@@ -155,6 +162,7 @@ export function normalizeRedeemEmailTypeInput(payload = {}, options = {}) {
     name,
     slug,
     description: String(payload.description || "").trim(),
+    mail_protocol: normalizeMailProtocol(payload.mail_protocol),
     field_schema,
     import_delimiter,
     is_active: toBoolean(payload.is_active, true)
@@ -298,6 +306,7 @@ export function formatRedeemedInventory(type, payload = {}) {
       slug: type?.slug || "",
       name: type?.name || "",
       description: type?.description || "",
+      mail_protocol: normalizeMailProtocol(type?.mail_protocol),
       import_delimiter: delimiter
     },
     fields: fieldSchema.map((field) => ({

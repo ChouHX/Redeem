@@ -142,6 +142,7 @@ test("redeem flow supports custom types, inventory, codes and redemption", async
       name: "Outlook Exchange",
       slug: "outlook-exchange",
       description: "custom redeem type",
+      mail_protocol: "graph",
       import_delimiter: "----",
       is_active: true,
       field_schema: [
@@ -157,6 +158,7 @@ test("redeem flow supports custom types, inventory, codes and redemption", async
   assert.equal(typeCreateResult.body.success, true);
   const typeId = typeCreateResult.body.data.id;
   assert.equal(typeCreateResult.body.data.slug, "outlook-exchange");
+  assert.equal(typeCreateResult.body.data.mail_protocol, "graph");
 
   const backupTypeCreateResult = await request("/api/redeem/admin/types", {
     method: "POST",
@@ -212,6 +214,7 @@ test("redeem flow supports custom types, inventory, codes and redemption", async
   assert.equal(inventoryListBeforeDelete.response.status, 200);
   assert.equal(inventoryListBeforeDelete.body.success, true);
   assert.equal(inventoryListBeforeDelete.body.data.total, 5);
+  assert.equal(inventoryListBeforeDelete.body.data.items[0].mail_protocol, "graph");
 
   const thirdInventory = inventoryListBeforeDelete.body.data.items.find(
     (item) => item.payload.account === "third-mail@example.com"
@@ -372,6 +375,7 @@ test("redeem flow supports custom types, inventory, codes and redemption", async
   const backupCatalogType = catalogResult.body.data.types.find((item) => item.id === backupTypeId);
   assert.ok(customCatalogType);
   assert.ok(backupCatalogType);
+  assert.equal(customCatalogType.mail_protocol, "graph");
   assert.equal(customCatalogType.available_inventory_count, 2);
   assert.equal(customCatalogType.available_code_count, 1);
   assert.equal(backupCatalogType.available_inventory_count, 1);
@@ -388,6 +392,7 @@ test("redeem flow supports custom types, inventory, codes and redemption", async
   assert.equal(redeemResult.response.status, 200);
   assert.equal(redeemResult.body.success, true);
   assert.equal(redeemResult.body.data.type.slug, "outlook-exchange");
+  assert.equal(redeemResult.body.data.type.mail_protocol, "graph");
   assert.equal(redeemResult.body.data.quantity, 2);
   assert.equal(redeemResult.body.data.redeemed_count, 2);
   assert.equal(redeemResult.body.data.items.length, 2);
@@ -421,6 +426,7 @@ test("redeem flow supports custom types, inventory, codes and redemption", async
   assert.equal(redeemedQueryResult.response.status, 200);
   assert.equal(redeemedQueryResult.body.success, true);
   assert.equal(redeemedQueryResult.body.data.code, firstCode.code);
+  assert.equal(redeemedQueryResult.body.data.type.mail_protocol, "graph");
   assert.equal(redeemedQueryResult.body.data.item_count, 2);
   assert.deepEqual(
     redeemedQueryResult.body.data.items

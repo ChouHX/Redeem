@@ -14,6 +14,7 @@ import {
   PORT
 } from "./config.js";
 import {
+  db,
   closeDb,
   createRedeemCodes,
   createRedeemEmailType,
@@ -27,6 +28,7 @@ import {
   getRedeemCodesForExport,
   getRedeemRecordsByCodeId,
   getRedeemRecordsByCodeIdPaged,
+  getMailboxInventoryAccounts,
   getMailboxAccountFromInventory,
   getRedeemAdminOverview,
   getRedeemCodesPaged,
@@ -55,14 +57,14 @@ import {
   getMessagesWithContent
 } from "./imap.js";
 import {
-  cancelMailboxCheckTask,
-  getMailboxCheckTaskSummary,
-  listMailboxCheckTasks,
-  startMailboxCheckTask
-} from "./mailbox-checker.js";
+  getGraphMailMessageDetail,
+  getGraphMailMessagesPaged,
+  getGraphMessagesWithContent
+} from "./graph.js";
 import {
   parseMailboxAccountLine,
   formatRedeemedInventory,
+  normalizeMailProtocol,
   normalizeRedeemEmailTypeInput,
   parseInventoryImportText
 } from "./redeem.js";
@@ -105,13 +107,11 @@ const DEFAULT_FAQ_HTML = `
   <li><strong>严禁利用本站购买的账号用于一切非法用途。</strong> 本站只有义务出售，但无法管控使用权。您拥有使用权以后，请务必合法利用，切勿游走法律边缘。</li>
   <li><strong>本站所出售的邮箱主要用于注册接收邮件。</strong> 禁止用于诈骗信息推广、违规信息推广以及其他非法用途。</li>
   <li><strong>一旦本站发现用于非法用途，除封号外，本站将全力配合有关部门予以打击。</strong></li>
-  <li>邮箱如果收不到邮件，请先使用 <strong>IMAP 取件激活</strong> 一下。</li>
 </ol>
 <h2>Outlook 登录绕过辅助邮箱绑定</h2>
 <p>已触发 7 天的号，如果登录网页提示绑定辅助邮箱，可在绑定提示页面保持不关闭，直接在原页面地址栏粘贴以下链接进入邮箱：</p>
 <p><a href="https://outlook.live.com/mail/0/" target="_blank" rel="noreferrer">https://outlook.live.com/mail/0/</a></p>
 `.trim();
-
 app.use(cors());
 app.use(express.json({ limit: "4mb" }));
 
@@ -239,13 +239,13 @@ function sendFrontendIndex(res) {
     );
 }
 
-
 function serializeRedeemTypeForPublic(type) {
   return {
     id: type.id,
     slug: type.slug,
     name: type.name,
     description: type.description,
+    mail_protocol: type.mail_protocol || "imap",
     import_delimiter: type.import_delimiter,
     is_active: type.is_active,
     available_inventory_count: type.available_inventory_count,
@@ -267,6 +267,7 @@ function createPublicRedeemRecordType(record) {
     slug: record.type_slug,
     name: record.type_name,
     description: "",
+    mail_protocol: record.mail_protocol || "imap",
     field_schema: record.field_schema,
     import_delimiter: record.import_delimiter
   };
@@ -407,7 +408,8 @@ function normalizeTempMailboxPayload(payload = {}) {
     email,
     password: String(payload.password || ""),
     client_id: String(payload.client_id || CLIENT_ID),
-    refresh_token: refreshToken
+    refresh_token: refreshToken,
+    mail_protocol: normalizeMailProtocol(payload.mail_protocol)
   };
 }
 
@@ -430,13 +432,35 @@ function serializeMailDetailResult(result) {
   };
 }
 
+function isGraphAccount(account) {
+  return normalizeMailProtocol(account?.mail_protocol) === "graph";
+}
+
+function getAccountMessagesWithContent(account, top, folder) {
+  return isGraphAccount(account)
+    ? getGraphMessagesWithContent(account, top, folder)
+    : getMessagesWithContent(account, top, folder);
+}
+
+function getAccountMailMessagesPaged(account, options = {}) {
+  return isGraphAccount(account)
+    ? getGraphMailMessagesPaged(account, options)
+    : getMailMessagesPaged(account, options);
+}
+
+function getAccountMailMessageDetail(account, options = {}) {
+  return isGraphAccount(account)
+    ? getGraphMailMessageDetail(account, options)
+    : getMailMessageDetail(account, options);
+}
+
 async function fetchStoredAccountMessages(email, top, folder = "inbox") {
   const account = getMailboxAccountFromInventory(email);
   if (!account) {
     throw new Error(`邮箱 ${email} 未在配置中找到`);
   }
 
-  const result = await getMessagesWithContent({ email, ...account }, top, folder);
+  const result = await getAccountMessagesWithContent({ email, ...account }, top, folder);
   await persistRefreshedAccountToken(email, account, result.refreshToken);
   return result;
 }
@@ -447,7 +471,7 @@ async function fetchStoredAccountMessagesPaged(email, options = {}) {
     throw new Error(`邮箱 ${email} 未在配置中找到`);
   }
 
-  const result = await getMailMessagesPaged({ email, ...account }, options);
+  const result = await getAccountMailMessagesPaged({ email, ...account }, options);
   await persistRefreshedAccountToken(email, account, result.refreshToken);
   return result;
 }
@@ -458,38 +482,19 @@ async function fetchStoredAccountMessageDetail(email, options = {}) {
     throw new Error(`邮箱 ${email} 未在配置中找到`);
   }
 
-  const result = await getMailMessageDetail({ email, ...account }, options);
+  const result = await getAccountMailMessageDetail({ email, ...account }, options);
   await persistRefreshedAccountToken(email, account, result.refreshToken);
   return result;
 }
 
-app.get("/api/messages", async (req, res) => {
-  try {
-    const email = normalizeEmail(req.query.email);
-    const configuredLimit = parseBoundedInt(
-      getSystemConfig().email_limit,
-      DEFAULT_EMAIL_LIMIT,
-      { min: 1, max: 50 }
-    );
-    const top = parseBoundedInt(req.query.top, configuredLimit, { min: 1, max: 50 });
-    const folder = parseMailFolder(req.query.folder);
-
-    if (!email) {
-      res.json(fail("请提供邮箱地址"));
-      return;
-    }
-
-    const result = await fetchStoredAccountMessages(email, top, folder);
-    res.json(ok(result.messages));
-  } catch (error) {
-    logger.error("api_messages_failed", { error });
-    res.json(fail(`获取邮件列表失败: ${error.message}`));
-  }
-});
-
-app.get("/api/message/:messageId", (_, res) => {
-  res.json(fail("请使用 /api/messages 接口获取邮件列表，包含完整内容"));
-});
+function parseInventoryStatus(value) {
+  const normalized = String(value || "").trim();
+  return normalized === "available" ||
+    normalized === "unavailable" ||
+    normalized === "redeemed"
+    ? normalized
+    : "";
+}
 
 app.post("/api/temp-messages", async (req, res) => {
   try {
@@ -497,7 +502,7 @@ app.post("/api/temp-messages", async (req, res) => {
     const top = parseBoundedInt(req.body?.top, 1, { min: 1, max: 50 });
     const folder = parseMailFolder(req.body?.folder);
 
-    const result = await getMessagesWithContent(
+    const result = await getAccountMessagesWithContent(
       payload,
       top,
       folder
@@ -507,59 +512,6 @@ app.post("/api/temp-messages", async (req, res) => {
   } catch (error) {
     logger.error("api_temp_messages_failed", { error });
     res.json(fail(`获取邮件失败: ${error.message}`));
-  }
-});
-
-app.get("/api/mailboxes/messages", async (req, res) => {
-  try {
-    const email = normalizeEmail(req.query.email);
-    const configuredLimit = parseBoundedInt(
-      getSystemConfig().email_limit,
-      DEFAULT_EMAIL_LIMIT,
-      { min: 1, max: 100 }
-    );
-    const folder = parseMailFolder(req.query.folder);
-    const page = parseBoundedInt(req.query.page, 1, { min: 1, max: 100000 });
-    const pageSize = parseBoundedInt(req.query.page_size, configuredLimit, {
-      min: 1,
-      max: 100
-    });
-
-    if (!email) {
-      res.status(400).json(fail("请提供邮箱地址"));
-      return;
-    }
-
-    const result = await fetchStoredAccountMessagesPaged(email, {
-      folder,
-      page,
-      pageSize
-    });
-    res.json(ok(serializeMailListResult(result), `共 ${result.total} 封邮件`));
-  } catch (error) {
-    logger.error("api_mailboxes_messages_failed", { error });
-    res.status(400).json(fail(`获取邮件列表失败: ${error.message}`));
-  }
-});
-
-app.get("/api/mailboxes/messages/:messageId", async (req, res) => {
-  try {
-    const email = normalizeEmail(req.query.email);
-    const folder = parseMailFolder(req.query.folder);
-
-    if (!email) {
-      res.status(400).json(fail("请提供邮箱地址"));
-      return;
-    }
-
-    const result = await fetchStoredAccountMessageDetail(email, {
-      folder,
-      messageId: req.params.messageId
-    });
-    res.json(ok(serializeMailDetailResult(result), "邮件详情获取成功"));
-  } catch (error) {
-    logger.error("api_mailboxes_message_detail_failed", { error });
-    res.status(400).json(fail(`获取邮件详情失败: ${error.message}`));
   }
 });
 
@@ -573,7 +525,7 @@ app.post("/api/mailboxes/temp/messages", async (req, res) => {
       max: 100
     });
 
-    const result = await getMailMessagesPaged(payload, {
+    const result = await getAccountMailMessagesPaged(payload, {
       folder,
       page,
       pageSize
@@ -590,7 +542,7 @@ app.post("/api/mailboxes/temp/messages/:messageId", async (req, res) => {
     const payload = normalizeTempMailboxPayload(req.body || {});
     const folder = parseMailFolder(req.body?.folder);
 
-    const result = await getMailMessageDetail(payload, {
+    const result = await getAccountMailMessageDetail(payload, {
       folder,
       messageId: req.params.messageId
     });
@@ -666,43 +618,6 @@ app.get("/api/system/faq", requireAdmin, (_, res) => {
 app.post("/api/system/faq", requireAdmin, (req, res) => {
   const html = saveFaqHtml(req.body?.html);
   res.json(ok({ html }, "FAQ 配置更新成功"));
-});
-
-app.post("/api/test-email", requireAdmin, async (req, res) => {
-  try {
-    const payload = req.body || {};
-    const email = normalizeEmail(payload.email);
-    if (!email) {
-      res.json(fail("请提供邮箱地址"));
-      return;
-    }
-
-    if (payload.refresh_token) {
-      const result = await getMessagesWithContent(
-        {
-          email,
-          password: String(payload.password || ""),
-          client_id: String(payload.client_id || CLIENT_ID),
-          refresh_token: String(payload.refresh_token)
-        },
-        1
-      );
-      res.json(ok(result.messages[0] || null, result.messages.length ? "测试成功，获取到最新邮件" : "测试成功，但该邮箱暂无邮件"));
-      return;
-    }
-
-    const account = getMailboxAccountFromInventory(email);
-    if (!account) {
-      res.json(fail("邮箱未在配置中找到"));
-      return;
-    }
-
-    const result = await fetchStoredAccountMessages(email, 1);
-    res.json(ok(result.messages[0] || null, result.messages.length ? "测试成功，获取到最新邮件" : "测试成功，但该邮箱暂无邮件"));
-  } catch (error) {
-    logger.error("api_test_email_failed", { error });
-    res.json(fail(`测试失败: ${error.message}`));
-  }
 });
 
 app.get("/api/redeem/catalog", (_, res) => {
@@ -827,6 +742,7 @@ app.post("/api/redeem/query", (req, res) => {
             slug: firstRecord.type_slug,
             name: firstRecord.type_name,
             description: "",
+            mail_protocol: firstRecord.mail_protocol || "imap",
             import_delimiter: firstRecord.import_delimiter
           },
           items: records.map(formatPublicRedeemRecord)
@@ -1500,61 +1416,6 @@ app.get("/api/redeem/admin/records/:codeId", requireAdmin, (req, res) => {
     )
   );
 });
-
-app.post("/api/redeem/admin/inventory/check", requireAdmin, (req, res) => {
-  const inventoryIds = normalizeIdList(req.body?.inventory_ids || []);
-  if (!inventoryIds.length) {
-    res.status(400).json(fail("请至少选择一条库存记录"));
-    return;
-  }
-
-  const concurrency = parseBoundedInt(req.body?.concurrency, 4, {
-    min: 1,
-    max: 8
-  });
-  const autoDisable = parseBoolean(req.body?.auto_disable, false);
-
-  try {
-    const summary = startMailboxCheckTask({
-      inventoryIds,
-      concurrency,
-      autoDisable
-    });
-    res.json(ok(summary, `已启动检测任务，共 ${summary.total} 个邮箱`));
-  } catch (error) {
-    res.status(400).json(fail(error.message || "启动检测任务失败"));
-  }
-});
-
-app.get("/api/redeem/admin/inventory/check/tasks", requireAdmin, (_, res) => {
-  res.json(ok({ items: listMailboxCheckTasks() }, "检测任务列表获取成功"));
-});
-
-app.get(
-  "/api/redeem/admin/inventory/check/tasks/:taskId",
-  requireAdmin,
-  (req, res) => {
-    const summary = getMailboxCheckTaskSummary(req.params.taskId);
-    if (!summary) {
-      res.status(404).json(fail("检测任务不存在或已过期"));
-      return;
-    }
-    res.json(ok(summary, "检测任务状态获取成功"));
-  }
-);
-
-app.post(
-  "/api/redeem/admin/inventory/check/tasks/:taskId/cancel",
-  requireAdmin,
-  (req, res) => {
-    const summary = cancelMailboxCheckTask(req.params.taskId);
-    if (!summary) {
-      res.status(404).json(fail("检测任务不存在或已过期"));
-      return;
-    }
-    res.json(ok(summary, "已请求停止检测任务"));
-  }
-);
 
 app.use(express.static(FRONTEND_DIST_DIR, { index: false }));
 

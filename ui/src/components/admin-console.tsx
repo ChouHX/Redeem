@@ -8,7 +8,6 @@ import {
   KeyRoundIcon,
   Layers3Icon,
   LogOutIcon,
-  MailIcon,
   PackagePlusIcon,
   PlusIcon,
   RefreshCcwIcon,
@@ -25,22 +24,16 @@ import {
   type AdminOverview,
   type FaqConfig,
   type FieldSchema,
-  type MailboxCheckTaskDetail,
-  type MailboxCheckTaskSummary,
   type PagedResult,
   batchUpdateAdminCodes,
   batchDeleteAdminCodes,
   batchUpdateAdminInventory,
   batchUpdateAdminCodeStatus,
   batchDeleteAdminInventory,
-  cancelMailboxCheckTaskRequest,
   exportAdminCodesText,
   exportAdminInventoryText,
   fetchAdminAds,
   fetchAdminFaq,
-  fetchMailboxCheckTask,
-  listMailboxCheckTasks,
-  startMailboxCheckTask,
   type RedeemCodeItem,
   type RedeemInventoryItem,
   type RedeemRecordDetail,
@@ -190,6 +183,7 @@ function createTypeEditorState(type?: RedeemType): TypeEditorState {
       name: type.name,
       slug: type.slug,
       description: type.description || "",
+      mail_protocol: type.mail_protocol || "imap",
       import_delimiter: "----",
       is_active: type.is_active,
       field_schema: [createDefaultFields()],
@@ -200,6 +194,7 @@ function createTypeEditorState(type?: RedeemType): TypeEditorState {
     name: "",
     slug: "",
     description: "",
+    mail_protocol: "imap",
     import_delimiter: "----",
     is_active: true,
     field_schema: [createDefaultFields()],
@@ -565,25 +560,7 @@ export function AdminConsole() {
   const [recordDetail, setRecordDetail] = useState<RedeemRecordDetail | null>(
     null
   )
-  const [mailboxCheckDialogOpen, setMailboxCheckDialogOpen] = useState(false)
-  const [mailboxCheckSubmitting, setMailboxCheckSubmitting] = useState(false)
-  const [mailboxCheckConcurrency, setMailboxCheckConcurrency] = useState("4")
-  const [mailboxCheckAutoDisable, setMailboxCheckAutoDisable] = useState(false)
-  const [mailboxCheckTasks, setMailboxCheckTasks] = useState<
-    MailboxCheckTaskSummary[]
-  >([])
-  const [activeMailboxCheckTaskId, setActiveMailboxCheckTaskId] = useState<
-    string | null
-  >(null)
-  const [activeMailboxCheckTask, setActiveMailboxCheckTask] =
-    useState<MailboxCheckTaskDetail | null>(null)
-  const [mailboxCheckPanelOpen, setMailboxCheckPanelOpen] = useState(false)
   const inventoryImportFileInputRef = useRef<HTMLInputElement | null>(null)
-  const notifiedTaskIdsRef = useRef<Set<string>>(new Set())
-  const taskInventorySelectionsRef = useRef<Map<string, number[]>>(new Map())
-  const mailboxCheckPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  )
   const tokenRef = useRef("")
 
   function setDefaultTypeSelections(nextTypes: RedeemType[]) {
@@ -626,16 +603,6 @@ export function AdminConsole() {
     setInventoryImportPhase(null)
     setSelectedInventoryIds([])
     setSelectedCodeIds([])
-    setMailboxCheckTasks([])
-    setActiveMailboxCheckTaskId(null)
-    setActiveMailboxCheckTask(null)
-    setMailboxCheckPanelOpen(false)
-    notifiedTaskIdsRef.current.clear()
-    taskInventorySelectionsRef.current.clear()
-    if (mailboxCheckPollTimerRef.current) {
-      clearTimeout(mailboxCheckPollTimerRef.current)
-      mailboxCheckPollTimerRef.current = null
-    }
     showToast("会话已结束", message)
   }
 
@@ -829,137 +796,6 @@ export function AdminConsole() {
   useEffect(() => {
     tokenRef.current = token
   }, [token])
-
-  function ensureBrowserNotificationPermission() {
-    if (typeof window === "undefined" || !("Notification" in window)) {
-      return
-    }
-
-    if (
-      Notification.permission === "default" ||
-      Notification.permission === "denied"
-    ) {
-      try {
-        Notification.requestPermission().catch(() => {})
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  function fireBrowserNotification(title: string, body: string) {
-    if (typeof window === "undefined" || !("Notification" in window)) {
-      return
-    }
-    if (Notification.permission !== "granted") {
-      return
-    }
-    try {
-      new Notification(title, { body })
-    } catch {
-      // ignore
-    }
-  }
-
-  function notifyTaskFinished(task: MailboxCheckTaskSummary) {
-    if (notifiedTaskIdsRef.current.has(task.id)) {
-      return
-    }
-    notifiedTaskIdsRef.current.add(task.id)
-    const title =
-      task.status === "cancelled" ? "邮箱检测已取消" : "邮箱检测完成"
-    const description = `共 ${task.total} 个，成功 ${task.ok_count}，失败 ${task.fail_count}${
-      task.auto_disabled_count
-        ? `，自动设置不可用 ${task.auto_disabled_count}`
-        : ""
-    }`
-    showSuccessToast(title, description)
-    fireBrowserNotification(title, description)
-
-    const checkedIds = taskInventorySelectionsRef.current.get(task.id)
-    if (checkedIds?.length) {
-      const checkedSet = new Set(checkedIds)
-      setSelectedInventoryIds((current) =>
-        current.filter((id) => !checkedSet.has(id))
-      )
-    }
-    taskInventorySelectionsRef.current.delete(task.id)
-
-    if (task.auto_disabled_count > 0) {
-      void loadOverviewAndTypes()
-      void loadInventory()
-    }
-  }
-
-  async function pollMailboxCheckTasks(activeToken = tokenRef.current) {
-    if (!activeToken) {
-      return
-    }
-
-    try {
-      const list = await listMailboxCheckTasks(activeToken)
-      setMailboxCheckTasks(list)
-
-      for (const task of list) {
-        if (
-          task.status !== "running" &&
-          !notifiedTaskIdsRef.current.has(task.id)
-        ) {
-          notifyTaskFinished(task)
-        }
-      }
-
-      const activeId = activeMailboxCheckTaskId
-      if (activeId) {
-        try {
-          const detail = await fetchMailboxCheckTask(activeToken, activeId)
-          setActiveMailboxCheckTask(detail)
-        } catch {
-          // task may have expired; ignore
-        }
-      }
-
-      const hasRunning = list.some((task) => task.status === "running")
-      if (mailboxCheckPollTimerRef.current) {
-        clearTimeout(mailboxCheckPollTimerRef.current)
-        mailboxCheckPollTimerRef.current = null
-      }
-      if (hasRunning) {
-        mailboxCheckPollTimerRef.current = setTimeout(() => {
-          void pollMailboxCheckTasks()
-        }, 2500)
-      }
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        return
-      }
-      // silent — polling errors should not spam toasts
-    }
-  }
-
-  useEffect(() => {
-    if (!authenticated) {
-      return
-    }
-    ensureBrowserNotificationPermission()
-    void pollMailboxCheckTasks(token)
-    return () => {
-      if (mailboxCheckPollTimerRef.current) {
-        clearTimeout(mailboxCheckPollTimerRef.current)
-        mailboxCheckPollTimerRef.current = null
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authenticated, token])
-
-  useEffect(() => {
-    if (!activeMailboxCheckTaskId) {
-      setActiveMailboxCheckTask(null)
-      return
-    }
-    void pollMailboxCheckTasks()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMailboxCheckTaskId])
 
   useEffect(() => {
     const storedToken = sessionStorage.getItem("admin_token")
@@ -1373,63 +1209,6 @@ export function AdminConsole() {
       )
     } catch (error) {
       handleApiError(error, "导出库存失败")
-    }
-  }
-
-  function openMailboxCheckDialog() {
-    if (!selectedInventoryIds.length) {
-      showErrorToast("请先选择库存", "批量检测前需要至少勾选一条库存记录。")
-      return
-    }
-    setMailboxCheckConcurrency("4")
-    setMailboxCheckAutoDisable(false)
-    setMailboxCheckDialogOpen(true)
-  }
-
-  async function handleStartMailboxCheck(
-    event: React.FormEvent<HTMLFormElement>
-  ) {
-    event.preventDefault()
-    if (!selectedInventoryIds.length) {
-      showErrorToast("请先选择库存", "批量检测前需要至少勾选一条库存记录。")
-      return
-    }
-
-    const concurrency = Math.min(
-      8,
-      Math.max(1, Number(mailboxCheckConcurrency) || 4)
-    )
-
-    setMailboxCheckSubmitting(true)
-    try {
-      const payload = await startMailboxCheckTask(token, {
-        inventory_ids: selectedInventoryIds,
-        concurrency,
-        auto_disable: mailboxCheckAutoDisable,
-      })
-      taskInventorySelectionsRef.current.set(payload.data.id, [
-        ...selectedInventoryIds,
-      ])
-      ensureBrowserNotificationPermission()
-      setActiveMailboxCheckTaskId(payload.data.id)
-      setMailboxCheckPanelOpen(true)
-      setMailboxCheckDialogOpen(false)
-      showSuccessToast("检测任务已启动", payload.message)
-      void pollMailboxCheckTasks()
-    } catch (error) {
-      handleApiError(error, "启动批量检测失败")
-    } finally {
-      setMailboxCheckSubmitting(false)
-    }
-  }
-
-  async function handleCancelMailboxCheck(taskId: string) {
-    try {
-      await cancelMailboxCheckTaskRequest(token, taskId)
-      showToast("已请求停止", "任务在当前一批完成后会停止。")
-      void pollMailboxCheckTasks()
-    } catch (error) {
-      handleApiError(error, "停止检测任务失败")
     }
   }
 
@@ -1870,19 +1649,13 @@ export function AdminConsole() {
               <Separator />
 
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" asChild>
-                  <a href="/redeem">
-                    <TicketIcon data-icon="inline-start" />
-                    返回兑换页
-                  </a>
-                </Button>
-                <Button variant="outline" size="sm" asChild>
-                  <a href="/mail">
-                    <MailIcon data-icon="inline-start" />
-                    收件页
-                  </a>
-                </Button>
-              </div>
+              <Button variant="outline" size="sm" asChild>
+                <a href="/redeem">
+                  <TicketIcon data-icon="inline-start" />
+                  返回兑换页
+                </a>
+              </Button>
+            </div>
             </CardContent>
           </Card>
         </div>
@@ -1941,18 +1714,6 @@ export function AdminConsole() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setMailboxCheckPanelOpen(true)}
-              className="relative hidden md:inline-flex"
-            >
-              <MailIcon data-icon="inline-start" />
-              检测任务
-              {mailboxCheckTasks.some((task) => task.status === "running") ? (
-                <span className="ml-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              ) : null}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
               onClick={() => setPasswordDialogOpen(true)}
               className="hidden md:inline-flex"
             >
@@ -1968,17 +1729,6 @@ export function AdminConsole() {
               <a href="/redeem">
                 <TicketIcon data-icon="inline-start" />
                 用户兑换页
-              </a>
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              asChild
-              className="hidden md:inline-flex"
-            >
-              <a href="/mail">
-                <MailIcon data-icon="inline-start" />
-                收件页
               </a>
             </Button>
             <Button
@@ -2001,19 +1751,11 @@ export function AdminConsole() {
                 <DropdownMenuItem onSelect={() => void refreshDashboard()}>
                   刷新数据
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => setMailboxCheckPanelOpen(true)}
-                >
-                  检测任务
-                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setPasswordDialogOpen(true)}>
                   修改密码
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
                   <a href="/redeem">用户兑换页</a>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <a href="/mail">收件页</a>
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => logout()}>
                   退出
@@ -2100,7 +1842,12 @@ export function AdminConsole() {
                             </div>
                           </TableCell>
                           <TableCell className="align-top">
-                            <Badge variant="outline">整行数据</Badge>
+                            <div className="flex flex-col gap-1">
+                              <Badge variant="outline">整行数据</Badge>
+                              <Badge variant={type.mail_protocol === "graph" ? "secondary" : "outline"}>
+                                {type.mail_protocol === "graph" ? "Graph" : "IMAP"}
+                              </Badge>
+                            </div>
                           </TableCell>
                           <TableCell className="align-top">
                             <div className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -2167,9 +1914,6 @@ export function AdminConsole() {
                           }}
                         >
                           导出已选
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={openMailboxCheckDialog}>
-                          批量检测邮箱
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           variant="destructive"
@@ -2888,7 +2632,7 @@ export function AdminConsole() {
                 </CardAction>
                 <CardTitle>广告位配置</CardTitle>
                 <CardDescription>
-                  配置兑换页和收件页的自营商品推荐卡内容。建议直接写你发卡网的商品和入口，不要堆太多标签或复杂营销话术。
+                  配置兑换页的自营商品推荐卡内容。建议直接写你发卡网的商品和入口，不要堆太多标签或复杂营销话术。
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-5">
@@ -3856,6 +3600,30 @@ export function AdminConsole() {
                       </Select>
                     </FieldContent>
                   </Field>
+                  <Field>
+                    <FieldLabel>取件协议</FieldLabel>
+                    <FieldContent>
+                      <Select
+                        value={typeEditor.mail_protocol}
+                        onValueChange={(value) =>
+                          updateTypeField(
+                            "mail_protocol",
+                            value === "graph" ? "graph" : "imap"
+                          )
+                        }
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value="imap">IMAP</SelectItem>
+                            <SelectItem value="graph">Graph</SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </FieldContent>
+                  </Field>
                 </div>
               </FieldGroup>
               <div className="rounded-none border border-border/70 bg-muted/40 px-3 py-3 text-xs text-muted-foreground">
@@ -3883,268 +3651,6 @@ export function AdminConsole() {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={mailboxCheckDialogOpen}
-        onOpenChange={setMailboxCheckDialogOpen}
-      >
-        <DialogContent className="max-w-[min(96vw,32rem)] p-0 sm:max-w-[min(96vw,32rem)]">
-          <DialogHeader className="border-b border-border/70 px-5 py-4">
-            <DialogTitle>批量检测邮箱</DialogTitle>
-            <DialogDescription>
-              对已选 {selectedInventoryIds.length} 条库存中的邮箱发起 IMAP 连接测试。检测耗时较长，启动后可关闭对话框，结果会通过通知与任务面板呈现。
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="flex flex-col"
-            onSubmit={handleStartMailboxCheck}
-          >
-            <div className="flex min-h-0 flex-col gap-5 overflow-y-auto px-5 py-4">
-              <FieldGroup>
-                <Field>
-                  <FieldLabel htmlFor="mailbox-check-concurrency">
-                    并发数（1-8）
-                  </FieldLabel>
-                  <FieldContent>
-                    <Input
-                      id="mailbox-check-concurrency"
-                      inputMode="numeric"
-                      value={mailboxCheckConcurrency}
-                      onChange={(event) =>
-                        setMailboxCheckConcurrency(
-                          event.target.value.replace(/[^\d]/g, "")
-                        )
-                      }
-                      placeholder="默认 4"
-                    />
-                    <FieldDescription>
-                      并发越高越快，过高可能触发上游限流。建议 4-6。
-                    </FieldDescription>
-                  </FieldContent>
-                </Field>
-                <Field>
-                  <FieldContent>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={mailboxCheckAutoDisable}
-                        onChange={(event) =>
-                          setMailboxCheckAutoDisable(
-                            event.currentTarget.checked
-                          )
-                        }
-                      />
-                      检测失败时自动将"可用"库存设为"不可用"
-                    </label>
-                    <FieldDescription>
-                      已兑换或已不可用的库存不会被改变状态。
-                    </FieldDescription>
-                  </FieldContent>
-                </Field>
-              </FieldGroup>
-            </div>
-            <DialogFooter className="border-t border-border/70 px-5 py-4">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setMailboxCheckDialogOpen(false)}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={mailboxCheckSubmitting}>
-                <RefreshCcwIcon data-icon="inline-start" />
-                {mailboxCheckSubmitting ? "启动中..." : "开始检测"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={mailboxCheckPanelOpen}
-        onOpenChange={(open) => {
-          setMailboxCheckPanelOpen(open)
-          if (!open) {
-            setActiveMailboxCheckTaskId(null)
-          }
-        }}
-      >
-        <DialogContent className="max-w-[min(96vw,48rem)] p-0 sm:max-w-[min(96vw,48rem)]">
-          <DialogHeader className="border-b border-border/70 px-5 py-4">
-            <DialogTitle>邮箱检测任务</DialogTitle>
-            <DialogDescription>
-              任务在后台运行。关闭对话框不会停止任务，完成后会通过通知告知。任务最多保留 30 分钟。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex max-h-[min(80svh,40rem)] min-h-0 flex-col gap-4 overflow-y-auto px-5 py-4">
-            {mailboxCheckTasks.length ? (
-              <div className="flex flex-col gap-2">
-                <p className="text-xs text-muted-foreground">最近任务</p>
-                <div className="flex flex-col gap-1.5">
-                  {mailboxCheckTasks.map((task) => {
-                    const isActive = activeMailboxCheckTaskId === task.id
-                    const statusLabel =
-                      task.status === "running"
-                        ? "进行中"
-                        : task.status === "cancelled"
-                          ? "已取消"
-                          : "已完成"
-                    return (
-                      <button
-                        key={task.id}
-                        type="button"
-                        onClick={() => setActiveMailboxCheckTaskId(task.id)}
-                        className={`flex flex-col gap-1 rounded border px-3 py-2 text-left text-xs transition-colors ${
-                          isActive
-                            ? "border-primary bg-primary/10"
-                            : "border-border/70 hover:bg-muted/40"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono">
-                            #{task.id.slice(0, 8)}
-                          </span>
-                          <Badge
-                            variant={
-                              task.status === "running"
-                                ? "secondary"
-                                : "outline"
-                            }
-                          >
-                            {statusLabel}
-                          </Badge>
-                        </div>
-                        <span className="text-muted-foreground">
-                          {task.processed} / {task.total}（成功 {task.ok_count}，失败 {task.fail_count}
-                          {task.auto_disabled_count
-                            ? `，自动停用 ${task.auto_disabled_count}`
-                            : ""}
-                          ）· {formatDateTime(task.started_at)}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                还没有发起过检测任务。先在库存列表勾选邮箱，再选择"批量操作 → 批量检测邮箱"。
-              </p>
-            )}
-
-            {activeMailboxCheckTask ? (
-              <div className="flex flex-col gap-3 border-t border-border/70 pt-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-sm font-medium">
-                      任务 #{activeMailboxCheckTask.id.slice(0, 8)}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {activeMailboxCheckTask.processed} / {activeMailboxCheckTask.total}
-                      （成功 {activeMailboxCheckTask.ok_count}，失败 {activeMailboxCheckTask.fail_count}
-                      {activeMailboxCheckTask.auto_disabled_count
-                        ? `，自动停用 ${activeMailboxCheckTask.auto_disabled_count}`
-                        : ""}
-                      ） · 并发 {activeMailboxCheckTask.concurrency}
-                    </span>
-                    {activeMailboxCheckTask.last_message ? (
-                      <span className="text-xs text-muted-foreground">
-                        最近：{activeMailboxCheckTask.last_message}
-                      </span>
-                    ) : null}
-                  </div>
-                  {activeMailboxCheckTask.status === "running" ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={activeMailboxCheckTask.cancel_requested}
-                      onClick={() =>
-                        void handleCancelMailboxCheck(
-                          activeMailboxCheckTask.id
-                        )
-                      }
-                    >
-                      {activeMailboxCheckTask.cancel_requested
-                        ? "停止中..."
-                        : "停止任务"}
-                    </Button>
-                  ) : null}
-                </div>
-                <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
-                  <div
-                    className="h-full bg-primary transition-[width]"
-                    style={{
-                      width: `${
-                        activeMailboxCheckTask.total
-                          ? Math.round(
-                              (activeMailboxCheckTask.processed /
-                                activeMailboxCheckTask.total) *
-                                100
-                            )
-                          : 0
-                      }%`,
-                    }}
-                  />
-                </div>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>邮箱</TableHead>
-                      <TableHead>结果</TableHead>
-                      <TableHead>耗时</TableHead>
-                      <TableHead>处理</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {activeMailboxCheckTask.results
-                      .slice(-50)
-                      .reverse()
-                      .map((result) => (
-                        <TableRow key={`${result.inventory_id}-${result.checked_at}`}>
-                          <TableCell className="max-w-[12rem] truncate">
-                            <span className="font-mono text-xs">
-                              {result.email}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={result.ok ? "secondary" : "outline"}
-                            >
-                              {result.ok ? "成功" : "失败"}
-                            </Badge>
-                            {result.message ? (
-                              <span className="ml-2 text-xs text-muted-foreground">
-                                {truncateText(result.message, 40)}
-                              </span>
-                            ) : null}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            {result.duration_ms} ms
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            {result.auto_disabled ? "已自动停用" : "—"}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-                {activeMailboxCheckTask.results.length > 50 ? (
-                  <p className="text-xs text-muted-foreground">
-                    仅展示最近 50 条，共 {activeMailboxCheckTask.results.length} 条结果。
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-          <DialogFooter className="border-t border-border/70 px-5 py-4">
-            <Button
-              variant="outline"
-              onClick={() => setMailboxCheckPanelOpen(false)}
-            >
-              关闭
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </main>
   )
 }

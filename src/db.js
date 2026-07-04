@@ -4,6 +4,7 @@ import {
   DEFAULT_REDEEM_EMAIL_TYPE,
   generateRedeemCode,
   normalizeRedeemCode,
+  normalizeMailProtocol,
   parseMailboxAccountLine,
   parseRedeemFieldSchema,
   payloadToSearchText,
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS redeem_email_types (
   name TEXT NOT NULL,
   description TEXT DEFAULT '',
   field_schema TEXT NOT NULL,
+  mail_protocol TEXT NOT NULL DEFAULT 'imap',
   import_delimiter TEXT NOT NULL DEFAULT '----',
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -123,6 +125,7 @@ function ensureColumn(tableName, columnName, columnDefinition) {
 
 ensureColumn("redeem_codes", "quantity", "INTEGER NOT NULL DEFAULT 1");
 ensureColumn("redeem_codes", "redeemed_quantity", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("redeem_email_types", "mail_protocol", "TEXT NOT NULL DEFAULT 'imap'");
 
 function rowToAccount(row) {
   return {
@@ -186,6 +189,7 @@ function rowToRedeemType(row) {
     name: row.name,
     description: row.description || "",
     field_schema: parseRedeemFieldSchema(row.field_schema),
+    mail_protocol: normalizeMailProtocol(row.mail_protocol),
     import_delimiter: row.import_delimiter || "----",
     is_active: Boolean(row.is_active),
     available_inventory_count: Number(row.available_inventory_count || 0),
@@ -207,6 +211,7 @@ function rowToRedeemInventory(row) {
     type_name: row.type_name || "",
     type_slug: row.type_slug || "",
     field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
+    mail_protocol: normalizeMailProtocol(row.mail_protocol),
     import_delimiter: row.import_delimiter || "----",
     payload: parseJson(row.payload_json, {}),
     serialized_value: row.serialized_value || "",
@@ -388,6 +393,7 @@ function rowToRedeemRecord(row) {
     type_name: row.type_name || "",
     type_slug: row.type_slug || "",
     field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
+    mail_protocol: normalizeMailProtocol(row.mail_protocol),
     import_delimiter: row.import_delimiter || "----",
     payload: parseJson(row.payload_json, {}),
     requester_ip: row.requester_ip || "",
@@ -408,6 +414,7 @@ function rowToRedeemRecordGroup(row) {
     normalized_code: row.normalized_code,
     type_name: row.type_name || "",
     type_slug: row.type_slug || "",
+    mail_protocol: normalizeMailProtocol(row.mail_protocol),
     item_count: Number(row.item_count || 0),
     redeemed_at: row.redeemed_at || "",
     requester_ip: row.requester_ip || "",
@@ -440,6 +447,7 @@ export function getMailboxAccountFromInventory(email) {
           types.slug AS type_slug,
           types.name AS type_name,
           types.field_schema,
+          types.mail_protocol,
           types.import_delimiter
         FROM redeem_inventory inventory
         JOIN redeem_email_types types ON types.id = inventory.type_id
@@ -470,6 +478,7 @@ export function getMailboxAccountFromInventory(email) {
       type_id: row.type_id,
       type_slug: row.type_slug,
       type_name: row.type_name,
+      mail_protocol: normalizeMailProtocol(row.mail_protocol),
       payload: payload,
       field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
       import_delimiter: row.import_delimiter || "----"
@@ -486,6 +495,7 @@ export function updateRedeemInventoryPayload(inventoryId, payload) {
         SELECT
           inventory.*,
           types.field_schema,
+          types.mail_protocol,
           types.import_delimiter
         FROM redeem_inventory inventory
         JOIN redeem_email_types types ON types.id = inventory.type_id
@@ -586,12 +596,13 @@ export function createRedeemEmailType(type) {
           name,
           description,
           field_schema,
+          mail_protocol,
           import_delimiter,
           is_active,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `
     )
     .run(
@@ -599,6 +610,7 @@ export function createRedeemEmailType(type) {
       type.name,
       type.description || "",
       JSON.stringify(type.field_schema),
+      normalizeMailProtocol(type.mail_protocol),
       type.import_delimiter || "----",
       type.is_active ? 1 : 0
     );
@@ -616,6 +628,7 @@ export function updateRedeemEmailType(typeId, type) {
           name = ?,
           description = ?,
           field_schema = ?,
+          mail_protocol = ?,
           import_delimiter = ?,
           is_active = ?,
           updated_at = CURRENT_TIMESTAMP
@@ -627,6 +640,7 @@ export function updateRedeemEmailType(typeId, type) {
       type.name,
       type.description || "",
       JSON.stringify(type.field_schema),
+      normalizeMailProtocol(type.mail_protocol),
       type.import_delimiter || "----",
       type.is_active ? 1 : 0,
       Number(typeId)
@@ -736,6 +750,7 @@ export function getRedeemInventoryPaged({
           types.name AS type_name,
           types.slug AS type_slug,
           types.field_schema,
+          types.mail_protocol,
           types.import_delimiter
         FROM redeem_inventory inventory
         JOIN redeem_email_types types ON types.id = inventory.type_id
@@ -833,6 +848,7 @@ export function updateRedeemInventoryStatus(inventoryId, status) {
           types.name AS type_name,
           types.slug AS type_slug,
           types.field_schema,
+          types.mail_protocol,
           types.import_delimiter
         FROM redeem_inventory inventory
         JOIN redeem_email_types types ON types.id = inventory.type_id
@@ -891,6 +907,7 @@ export function updateRedeemInventoryBatch(ids, { type_id = null, status = null 
           types.name AS type_name,
           types.slug AS type_slug,
           types.field_schema,
+          types.mail_protocol,
           types.import_delimiter
         FROM redeem_inventory inventory
         JOIN redeem_email_types types ON types.id = inventory.type_id
@@ -999,6 +1016,91 @@ export function deleteRedeemInventoryBatch(ids) {
   return tx(targets);
 }
 
+export function getRedeemInventoryIdsForCheck({ type_id, status = "" } = {}) {
+  const conditions = [];
+  const params = [];
+
+  if (type_id) {
+    conditions.push("type_id = ?");
+    params.push(Number(type_id));
+  }
+
+  if (status === "available" || status === "unavailable" || status === "redeemed") {
+    conditions.push("status = ?");
+    params.push(status);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = db
+    .prepare(`SELECT id FROM redeem_inventory ${where} ORDER BY id ASC`)
+    .all(...params);
+  return rows.map((row) => Number(row.id));
+}
+
+export function getMailboxInventoryAccounts({ type_id, status = "" } = {}) {
+  const conditions = [];
+  const params = [];
+
+  if (type_id) {
+    conditions.push("inventory.type_id = ?");
+    params.push(Number(type_id));
+  }
+
+  if (status === "available" || status === "unavailable" || status === "redeemed") {
+    conditions.push("inventory.status = ?");
+    params.push(status);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          inventory.*,
+          types.name AS type_name,
+          types.slug AS type_slug,
+          types.field_schema,
+          types.mail_protocol,
+          types.import_delimiter
+        FROM redeem_inventory inventory
+        JOIN redeem_email_types types ON types.id = inventory.type_id
+        ${where}
+        ORDER BY inventory.id ASC
+      `
+    )
+    .all(...params);
+
+  const accounts = [];
+  const seenEmails = new Set();
+  for (const row of rows) {
+    const item = rowToRedeemInventory(row);
+    const credentials = extractMailboxCredentials(item?.payload || {});
+    if (!credentials) {
+      continue;
+    }
+
+    const emailKey = normalizeLookupValue(credentials.email);
+    if (seenEmails.has(emailKey)) {
+      continue;
+    }
+    seenEmails.add(emailKey);
+
+    accounts.push({
+      inventory_id: item.id,
+      type_id: item.type_id,
+      type_name: item.type_name,
+      type_slug: item.type_slug,
+      mail_protocol: item.mail_protocol,
+      status: item.status,
+      source: "redeem_inventory",
+      payload: item.payload,
+      ...credentials
+    });
+  }
+
+  return accounts;
+}
+
 export function getRedeemInventoryByIds(ids) {
   const targets = [...new Set((ids || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
   if (!targets.length) {
@@ -1014,6 +1116,7 @@ export function getRedeemInventoryByIds(ids) {
           types.name AS type_name,
           types.slug AS type_slug,
           types.field_schema,
+          types.mail_protocol,
           types.import_delimiter
         FROM redeem_inventory inventory
         JOIN redeem_email_types types ON types.id = inventory.type_id
@@ -1168,6 +1271,7 @@ export function getRedeemRecordsByCodeId(codeId) {
           types.name AS type_name,
           types.slug AS type_slug,
           types.field_schema,
+          types.mail_protocol,
           types.import_delimiter
         FROM redeem_records records
         JOIN redeem_email_types types ON types.id = records.type_id
@@ -1202,6 +1306,7 @@ export function getRedeemRecordsByCodeIdPaged(codeId, { page = 1, page_size = 10
           types.name AS type_name,
           types.slug AS type_slug,
           types.field_schema,
+          types.mail_protocol,
           types.import_delimiter
         FROM redeem_records records
         JOIN redeem_email_types types ON types.id = records.type_id
@@ -1532,6 +1637,7 @@ export function redeemByCode({
             types.name AS type_name,
             types.slug AS type_slug,
             types.field_schema,
+            types.mail_protocol,
             types.import_delimiter,
             types.description
           FROM redeem_codes codes
@@ -1632,6 +1738,7 @@ export function redeemByCode({
           type_name: codeRow.type_name,
           type_slug: codeRow.type_slug,
           field_schema: codeRow.field_schema,
+          mail_protocol: codeRow.mail_protocol,
           import_delimiter: codeRow.import_delimiter,
           status: "redeemed",
           redeemed_code_id: codeRow.id,
@@ -1678,6 +1785,7 @@ export function redeemByCode({
         name: codeRow.type_name,
         description: codeRow.description,
         field_schema: codeRow.field_schema,
+        mail_protocol: codeRow.mail_protocol,
         import_delimiter: codeRow.import_delimiter,
         is_active: 1,
         available_inventory_count: 0,

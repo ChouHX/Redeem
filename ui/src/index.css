@@ -169,7 +169,8 @@
   }
 
   .page-shell-mail {
-    --page-background: var(--page-mail-background);
+    background-color: var(--background);
+    background-image: var(--page-mail-background);
   }
 
   .page-shell-redeem {
@@ -201,6 +202,11 @@
 
   .ad-slot-spin {
     animation: ad-slot-spin-border 4s linear infinite;
+  }
+
+  .ad-slot-marquee {
+    animation: ad-slot-marquee 18s linear infinite;
+    will-change: transform;
   }
 
   .rich-text-content {
@@ -367,8 +373,17 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ad-slot-scan,
-  .ad-slot-spin {
+  .ad-slot-spin,
+  .ad-slot-marquee {
     animation: none;
+  }
+}
+
+@media (min-width: 640px) {
+  .ad-slot-marquee {
+    animation: none;
+    transform: none;
+    will-change: auto;
   }
 }
 
@@ -380,4 +395,9 @@
 @keyframes ad-slot-spin-border {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+@keyframes ad-slot-marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(calc(-50% - 1rem)); }
 }
