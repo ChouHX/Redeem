@@ -23,7 +23,6 @@ import {
   type MailFolder,
   type MailListResult,
   type MailMessage,
-  type MailMessageSummary,
   type MailProtocol,
   type RedeemedItem,
   type TempMailAccount,
@@ -98,7 +97,7 @@ type ResultMessage = {
   accountId: string
   email: string
   protocol: MailProtocol
-  message: MailMessageSummary
+  message: MailMessage
 }
 
 const LOCAL_ACCOUNTS_STORAGE_KEY = "redeem-mail-local-accounts"
@@ -255,7 +254,7 @@ function accountFromRedeemedItem(item: RedeemedItem, index: number): MailAccount
   }
 }
 
-function resolveAddress(message?: MailMessageSummary | null) {
+function resolveAddress(message?: MailMessage | null) {
   const address = message?.sender?.emailAddress || message?.from?.emailAddress
   return address?.name || address?.address || "未知发件人"
 }
@@ -598,6 +597,7 @@ export function MailConsole() {
             folder,
             page: 1,
             page_size: FETCH_PAGE_SIZE,
+            include_bodies: true,
           }
         )
 
@@ -648,6 +648,14 @@ export function MailConsole() {
   }
 
   async function openMessageDetail(item: ResultMessage) {
+    if (item.message.body) {
+      setDetailContext(item)
+      setMailDetail(item.message)
+      setDetailDialogOpen(true)
+      setLoadingDetail(false)
+      return
+    }
+
     if (!item.message.id) {
       return
     }

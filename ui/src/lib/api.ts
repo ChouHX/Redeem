@@ -70,7 +70,7 @@ export type MailListResult = {
   total: number
   page: number
   page_size: number
-  items: MailMessageSummary[]
+  items: MailMessage[]
 }
 
 export type MailDetailResult = {
@@ -574,6 +574,7 @@ export async function fetchTempMailboxMessages(
     folder?: MailFolder
     page?: number
     page_size?: number
+    include_bodies?: boolean
   } = {}
 ) {
   const payload = await apiRequest<MailListResult>(
@@ -585,6 +586,7 @@ export async function fetchTempMailboxMessages(
         folder: params.folder,
         page: params.page,
         page_size: params.page_size,
+        include_bodies: params.include_bodies,
       },
     }
   )

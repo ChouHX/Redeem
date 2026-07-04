@@ -524,11 +524,16 @@ app.post("/api/mailboxes/temp/messages", async (req, res) => {
       min: 1,
       max: 100
     });
+    const includeBodies = parseBoolean(
+      req.body?.include_bodies ?? req.body?.includeBodies,
+      false
+    );
 
     const result = await getAccountMailMessagesPaged(payload, {
       folder,
       page,
-      pageSize
+      pageSize,
+      includeBodies
     });
     res.json(ok(serializeMailListResult(result), `共 ${result.total} 封邮件`));
   } catch (error) {
