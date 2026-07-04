@@ -361,10 +361,13 @@ export function MailConsole() {
     }
     return items
   }, [fetchStates])
-  const failedFetchStates = useMemo(
-    () => fetchStates.filter((state) => state.error),
-    [fetchStates]
-  )
+  const failedFetchStates = useMemo(() => {
+    if (fetchStates.some((state) => state.result)) {
+      return []
+    }
+
+    return fetchStates.filter((state) => state.error)
+  }, [fetchStates])
   const totalResultPages = Math.max(1, Math.ceil(resultMessages.length / MAIL_PAGE_SIZE))
   const pagedMessages = resultMessages.slice(
     (resultPage - 1) * MAIL_PAGE_SIZE,
@@ -629,13 +632,19 @@ export function MailConsole() {
     setFetching(false)
 
     const successCount = nextStates.filter((state) => state.result).length
-    const failedCount = nextStates.length - successCount
-    notify(
-      "取件完成",
-      failedCount
-        ? `成功 ${successCount} 个协议，失败 ${failedCount} 个。`
-        : `成功取件 ${successCount} 个协议。`
+    const messageCount = nextStates.reduce(
+      (total, state) => total + (state.result?.items.length || 0),
+      0
     )
+
+    if (successCount > 0) {
+      notify(
+        "取件成功",
+        messageCount ? `已获取 ${messageCount} 封邮件。` : "取件成功，暂无邮件。"
+      )
+    } else {
+      notify("取件失败", "所有已启用协议均获取失败。", "destructive")
+    }
   }
 
   async function openMessageDetail(item: ResultMessage) {
@@ -1144,7 +1153,7 @@ export function MailConsole() {
                   <div className="min-w-0 overflow-hidden border border-border/70 bg-background/60">
                     {failedFetchStates.map((state) => (
                       <div
-                        key={`${state.accountId}-error`}
+                        key={`${state.accountId}-${state.protocol}-error`}
                         className="min-w-0 border-b border-destructive/30 px-2 py-1 text-xs last:border-b-0"
                       >
                         <div className="truncate font-medium text-destructive">
