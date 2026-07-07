@@ -121,7 +121,13 @@ import { Textarea } from "@/components/ui/textarea"
 import { toast } from "sonner"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { createTextExportFilename, downloadTextFile } from "@/lib/utils"
-import { copyTextToClipboard, formatDateTime, formatErrorMessage } from "@/lib/shared"
+import {
+  chinaDatetimeLocalToIso,
+  copyTextToClipboard,
+  formatChinaDatetimeLocalValue,
+  formatDateTime,
+  formatErrorMessage,
+} from "@/lib/shared"
 
 type TypeEditorState = TypeFormPayload
 
@@ -199,21 +205,6 @@ function createTypeEditorState(type?: RedeemType): TypeEditorState {
     is_active: true,
     field_schema: [createDefaultFields()],
   }
-}
-
-function toDatetimeLocal(value: string | null | undefined) {
-  if (!value) {
-    return ""
-  }
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return ""
-  }
-
-  const offset = date.getTimezoneOffset()
-  const localDate = new Date(date.getTime() - offset * 60 * 1000)
-  return localDate.toISOString().slice(0, 16)
 }
 
 function truncateText(value: string, max = 52) {
@@ -1099,7 +1090,7 @@ export function AdminConsole() {
         quantity: Number(generateQuantity || 1),
         note: generateNote,
         expires_at: generateExpiresAt
-          ? new Date(generateExpiresAt).toISOString()
+          ? chinaDatetimeLocalToIso(generateExpiresAt)
           : undefined,
       })
       setGeneratedCodes(payload.data.items)
@@ -3477,7 +3468,7 @@ export function AdminConsole() {
                     <Input
                       id="code-expiry"
                       type="datetime-local"
-                      value={toDatetimeLocal(generateExpiresAt)}
+                      value={formatChinaDatetimeLocalValue(generateExpiresAt)}
                       onChange={(event) =>
                         setGenerateExpiresAt(event.target.value)
                       }

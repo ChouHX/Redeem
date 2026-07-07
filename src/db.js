@@ -426,6 +426,106 @@ function nowTimestamp() {
   return db.prepare("SELECT CURRENT_TIMESTAMP AS now").get().now;
 }
 
+function rowToRedeemTypeFromCode(row) {
+  return rowToRedeemType({
+    id: row.type_id,
+    slug: row.type_slug,
+    name: row.type_name,
+    description: row.description,
+    field_schema: row.field_schema,
+    mail_protocol: row.mail_protocol,
+    import_delimiter: row.import_delimiter,
+    is_active: 1,
+    available_inventory_count: 0,
+    available_code_count: 0,
+    redeemed_count: 0,
+    created_at: "",
+    updated_at: ""
+  });
+}
+
+function recordToRedeemInventory(record, codeId) {
+  return {
+    id: record.inventory_id,
+    type_id: record.type_id,
+    type_name: record.type_name,
+    type_slug: record.type_slug,
+    field_schema: record.field_schema,
+    mail_protocol: record.mail_protocol,
+    import_delimiter: record.import_delimiter,
+    payload: record.payload,
+    serialized_value: "",
+    search_text: "",
+    status: "redeemed",
+    redeemed_code_id: codeId,
+    redeemed_at: record.redeemed_at,
+    created_at: "",
+    updated_at: ""
+  };
+}
+
+function buildExistingRedeemResult(codeRow) {
+  const records = getRedeemRecordsByCodeId(codeRow.id);
+  const redeemedAt = codeRow.redeemed_at || records[0]?.redeemed_at || "";
+
+  if (records.length) {
+    return {
+      record_id: records[0].id || null,
+      record_ids: records.map((record) => record.id),
+      redeemed_count: records.length,
+      code: rowToRedeemCode({
+        ...codeRow,
+        status: "redeemed",
+        redeemed_quantity: Math.max(Number(codeRow.redeemed_quantity || 0), records.length),
+        redeemed_inventory_id: codeRow.redeemed_inventory_id ?? records[0].inventory_id,
+        redeemed_at: redeemedAt
+      }),
+      inventories: records.map((record) => recordToRedeemInventory(record, codeRow.id)),
+      type: rowToRedeemTypeFromCode(codeRow)
+    };
+  }
+
+  const inventoryRows = db
+    .prepare(
+      `
+        SELECT
+          inventory.*,
+          types.name AS type_name,
+          types.slug AS type_slug,
+          types.field_schema,
+          types.mail_protocol,
+          types.import_delimiter
+        FROM redeem_inventory inventory
+        JOIN redeem_email_types types ON types.id = inventory.type_id
+        WHERE
+          inventory.redeemed_code_id = ?
+          OR (? IS NOT NULL AND inventory.id = ?)
+        ORDER BY inventory.id ASC
+      `
+    )
+    .all(codeRow.id, codeRow.redeemed_inventory_id, codeRow.redeemed_inventory_id)
+    .map(rowToRedeemInventory);
+
+  if (!inventoryRows.length) {
+    throw new Error("兑换码已兑换，但没有可查询的兑换结果");
+  }
+
+  return {
+    record_id: null,
+    record_ids: [],
+    redeemed_count: inventoryRows.length,
+    code: rowToRedeemCode({
+      ...codeRow,
+      status: "redeemed",
+      redeemed_quantity: Math.max(Number(codeRow.redeemed_quantity || 0), inventoryRows.length),
+      redeemed_inventory_id: codeRow.redeemed_inventory_id ?? inventoryRows[0].id,
+      redeemed_at: codeRow.redeemed_at || inventoryRows[0].redeemed_at
+    }),
+    inventories: inventoryRows,
+    type: rowToRedeemTypeFromCode(codeRow)
+  };
+}
+
 export function getAccount(email) {
   const row = db
     .prepare("SELECT email, password, client_id, refresh_token FROM accounts WHERE email = ?")
@@ -1657,7 +1757,7 @@ export function redeemByCode({
     }
 
     if (codeRow.status === "redeemed") {
-      throw new Error("兑换码已被使用");
+      return buildExistingRedeemResult(codeRow);
     }
 
     if (codeRow.expires_at && Date.parse(codeRow.expires_at) <= Date.now()) {
@@ -1779,21 +1879,7 @@ export function redeemByCode({
         redeemed_at: redeemedAt
       }),
       inventories,
-      type: rowToRedeemType({
-        id: codeRow.type_id,
-        slug: codeRow.type_slug,
-        name: codeRow.type_name,
-        description: codeRow.description,
-        field_schema: codeRow.field_schema,
-        mail_protocol: codeRow.mail_protocol,
-        import_delimiter: codeRow.import_delimiter,
-        is_active: 1,
-        available_inventory_count: 0,
-        available_code_count: 0,
-        redeemed_count: 0,
-        created_at: "",
-        updated_at: ""
-      })
+      type: rowToRedeemTypeFromCode(codeRow)
     };
   });
 
