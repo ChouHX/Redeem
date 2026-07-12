@@ -14,16 +14,28 @@ import {
   SearchIcon,
   ShieldIcon,
   TicketIcon,
+  Trash2Icon,
   UserCogIcon,
 } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import {
   type AdSlotConfig,
   ApiError,
   type AdminOverview,
   type FaqConfig,
   type FieldSchema,
+  type MailProtocol,
   type PagedResult,
   batchUpdateAdminCodes,
   batchDeleteAdminCodes,
@@ -44,6 +56,7 @@ import {
   createAdminType,
   deleteAdminCode,
   deleteAdminInventory,
+  deleteAdminType,
   fetchAdminCodes,
   fetchAdminInventory,
   fetchAdminOverview,
@@ -65,6 +78,7 @@ import { AdSlotCard } from "@/components/ad-slot-card"
 import { RichTextContent, RichTextEditor } from "@/components/rich-text-content"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Card,
   CardAction,
@@ -96,6 +110,8 @@ import {
   FieldDescription,
   FieldGroup,
   FieldLabel,
+  FieldLegend,
+  FieldSet,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
@@ -172,6 +188,22 @@ type CodeBatchEditState = {
 }
 
 const MAX_RECORD_PREVIEW_ITEMS = 10
+const MAIL_PROTOCOLS: MailProtocol[] = ["imap", "graph"]
+
+function normalizeMailProtocols(
+  protocols: MailProtocol[] | null | undefined,
+  legacyProtocol?: MailProtocol
+) {
+  const normalized = (protocols || []).filter(
+    (protocol, index, list) =>
+      MAIL_PROTOCOLS.includes(protocol) && list.indexOf(protocol) === index
+  )
+  return normalized.length ? normalized : [legacyProtocol || "imap"]
+}
+
+function protocolLabel(protocol: MailProtocol) {
+  return protocol === "graph" ? "Graph" : "IMAP"
+}
 
 function createDefaultFields(): FieldSchema {
   return {
@@ -189,7 +221,10 @@ function createTypeEditorState(type?: RedeemType): TypeEditorState {
       name: type.name,
       slug: type.slug,
       description: type.description || "",
-      mail_protocol: type.mail_protocol || "imap",
+      mail_protocols: normalizeMailProtocols(
+        type.mail_protocols,
+        type.mail_protocol
+      ),
       import_delimiter: "----",
       is_active: type.is_active,
       field_schema: [createDefaultFields()],
@@ -200,7 +235,7 @@ function createTypeEditorState(type?: RedeemType): TypeEditorState {
     name: "",
     slug: "",
     description: "",
-    mail_protocol: "imap",
+    mail_protocols: ["imap"],
     import_delimiter: "----",
     is_active: true,
     field_schema: [createDefaultFields()],
@@ -346,10 +381,7 @@ function AdSlotEditorCard({
   slot: AdSlotConfig
   onEnabledChange: (enabled: boolean) => void
   onFieldChange: (
-    key:
-      | "title"
-      | "description"
-      | "image_url",
+    key: "title" | "description" | "image_url",
     value: string | string[]
   ) => void
   onActionChange: (
@@ -371,7 +403,9 @@ function AdSlotEditorCard({
               <input
                 type="checkbox"
                 checked={slot.enabled}
-                onChange={(event) => onEnabledChange(event.currentTarget.checked)}
+                onChange={(event) =>
+                  onEnabledChange(event.currentTarget.checked)
+                }
               />
               启用共享广告位
             </label>
@@ -383,7 +417,9 @@ function AdSlotEditorCard({
               <FieldContent>
                 <Input
                   value={slot.title}
-                  onChange={(event) => onFieldChange("title", event.target.value)}
+                  onChange={(event) =>
+                    onFieldChange("title", event.target.value)
+                  }
                 />
               </FieldContent>
             </Field>
@@ -393,7 +429,11 @@ function AdSlotEditorCard({
                 <Input
                   value={slot.primary_action.label}
                   onChange={(event) =>
-                    onActionChange("primary_action", "label", event.target.value)
+                    onActionChange(
+                      "primary_action",
+                      "label",
+                      event.target.value
+                    )
                   }
                 />
               </FieldContent>
@@ -406,7 +446,9 @@ function AdSlotEditorCard({
               <FieldContent>
                 <Input
                   value={slot.image_url}
-                  onChange={(event) => onFieldChange("image_url", event.target.value)}
+                  onChange={(event) =>
+                    onFieldChange("image_url", event.target.value)
+                  }
                   placeholder="例如 /ads/redeem.gif 或 https://..."
                 />
               </FieldContent>
@@ -430,11 +472,12 @@ function AdSlotEditorCard({
               <Textarea
                 rows={3}
                 value={slot.description}
-                onChange={(event) => onFieldChange("description", event.target.value)}
+                onChange={(event) =>
+                  onFieldChange("description", event.target.value)
+                }
               />
             </FieldContent>
           </Field>
-
         </div>
 
         <Separator />
@@ -445,7 +488,9 @@ function AdSlotEditorCard({
             title={slot.title}
             description={slot.description}
             imageUrl={slot.image_url}
-            primaryAction={slot.primary_action.href ? slot.primary_action : undefined}
+            primaryAction={
+              slot.primary_action.href ? slot.primary_action : undefined
+            }
             compact
           />
         </div>
@@ -486,10 +531,12 @@ export function AdminConsole() {
   const [codeBatchEditDialogOpen, setCodeBatchEditDialogOpen] = useState(false)
   const [recordDetailDialogOpen, setRecordDetailDialogOpen] = useState(false)
   const [editingType, setEditingType] = useState<RedeemType | null>(null)
+  const [deletingType, setDeletingType] = useState<RedeemType | null>(null)
   const [typeEditor, setTypeEditor] = useState<TypeEditorState>(
     createTypeEditorState()
   )
   const [typeSubmitting, setTypeSubmitting] = useState(false)
+  const [typeDeleting, setTypeDeleting] = useState(false)
   const [inventorySubmitting, setInventorySubmitting] = useState(false)
   const [inventoryBatchSubmitting, setInventoryBatchSubmitting] =
     useState(false)
@@ -523,10 +570,19 @@ export function AdminConsole() {
   })
   const [inventoryImportTypeId, setInventoryImportTypeId] = useState("")
   const [inventoryImportMode, setInventoryImportMode] = useState("append")
+  const [inventoryImportProtocols, setInventoryImportProtocols] = useState<
+    MailProtocol[]
+  >(["imap"])
   const [inventoryImportText, setInventoryImportText] = useState("")
-  const [inventoryImportFile, setInventoryImportFile] = useState<File | null>(null)
-  const [inventoryImportProgress, setInventoryImportProgress] = useState<number | null>(null)
-  const [inventoryImportPhase, setInventoryImportPhase] = useState<"uploading" | "processing" | null>(null)
+  const [inventoryImportFile, setInventoryImportFile] = useState<File | null>(
+    null
+  )
+  const [inventoryImportProgress, setInventoryImportProgress] = useState<
+    number | null
+  >(null)
+  const [inventoryImportPhase, setInventoryImportPhase] = useState<
+    "uploading" | "processing" | null
+  >(null)
   const [inventoryBatchEdit, setInventoryBatchEdit] =
     useState<InventoryBatchEditState>({
       typeId: "",
@@ -554,14 +610,37 @@ export function AdminConsole() {
   const inventoryImportFileInputRef = useRef<HTMLInputElement | null>(null)
   const tokenRef = useRef("")
 
+  const inventoryImportType = types.find(
+    (type) => String(type.id) === inventoryImportTypeId
+  )
+  const inventoryImportAllowedProtocols = inventoryImportType
+    ? normalizeMailProtocols(
+        inventoryImportType.mail_protocols,
+        inventoryImportType.mail_protocol
+      )
+    : []
+
   function setDefaultTypeSelections(nextTypes: RedeemType[]) {
-    const firstTypeId = nextTypes[0] ? String(nextTypes[0].id) : ""
-    if (!firstTypeId) {
+    const selectedType =
+      nextTypes.find((type) => String(type.id) === inventoryImportTypeId) ||
+      nextTypes[0]
+    if (!selectedType) {
       return
     }
 
-    setInventoryImportTypeId((current) => current || firstTypeId)
-    setGenerateTypeId((current) => current || firstTypeId)
+    const selectedTypeId = String(selectedType.id)
+    const allowedProtocols = normalizeMailProtocols(
+      selectedType.mail_protocols,
+      selectedType.mail_protocol
+    )
+    setInventoryImportTypeId((current) => current || selectedTypeId)
+    setInventoryImportProtocols((current) => {
+      const constrained = current.filter((protocol) =>
+        allowedProtocols.includes(protocol)
+      )
+      return constrained.length ? constrained : allowedProtocols
+    })
+    setGenerateTypeId((current) => current || selectedTypeId)
   }
 
   function showToast(title: string, description: string) {
@@ -807,25 +886,24 @@ export function AdminConsole() {
           nextInventory,
           nextCodes,
           nextRecords,
-        ] =
-          await Promise.all([
-            fetchAdminOverview(storedToken),
-            fetchAdminAds(storedToken),
-            fetchAdminFaq(storedToken),
-            fetchAdminTypes(storedToken),
-            fetchAdminInventory(storedToken, {
-              page: 1,
-              page_size: 10,
-            }),
-            fetchAdminCodes(storedToken, {
-              page: 1,
-              page_size: 10,
-            }),
-            fetchAdminRecords(storedToken, {
-              page: 1,
-              page_size: 10,
-            }),
-          ])
+        ] = await Promise.all([
+          fetchAdminOverview(storedToken),
+          fetchAdminAds(storedToken),
+          fetchAdminFaq(storedToken),
+          fetchAdminTypes(storedToken),
+          fetchAdminInventory(storedToken, {
+            page: 1,
+            page_size: 10,
+          }),
+          fetchAdminCodes(storedToken, {
+            page: 1,
+            page_size: 10,
+          }),
+          fetchAdminRecords(storedToken, {
+            page: 1,
+            page_size: 10,
+          }),
+        ])
 
         sessionStorage.setItem("admin_token", storedToken)
         setAuthenticated(true)
@@ -839,10 +917,20 @@ export function AdminConsole() {
         setCodes(nextCodes)
         setRecords(nextRecords)
 
-        const firstTypeId = nextTypes[0] ? String(nextTypes[0].id) : ""
-        if (firstTypeId) {
-          setInventoryImportTypeId((current) => current || firstTypeId)
-          setGenerateTypeId((current) => current || firstTypeId)
+        const firstType = nextTypes[0]
+        if (firstType) {
+          setInventoryImportTypeId((current) => current || String(firstType.id))
+          setInventoryImportProtocols((current) => {
+            const allowedProtocols = normalizeMailProtocols(
+              firstType.mail_protocols,
+              firstType.mail_protocol
+            )
+            const constrained = current.filter((protocol) =>
+              allowedProtocols.includes(protocol)
+            )
+            return constrained.length ? constrained : allowedProtocols
+          })
+          setGenerateTypeId((current) => current || String(firstType.id))
         }
       } catch {
         sessionStorage.removeItem("admin_token")
@@ -913,11 +1001,34 @@ export function AdminConsole() {
     }))
   }
 
+  function toggleTypeProtocol(protocol: MailProtocol, checked: boolean) {
+    setTypeEditor((current) => {
+      const nextProtocols = checked
+        ? [...new Set([...current.mail_protocols, protocol])]
+        : current.mail_protocols.filter((item) => item !== protocol)
+      return {
+        ...current,
+        mail_protocols: nextProtocols,
+      }
+    })
+  }
+
+  function toggleInventoryImportProtocol(
+    protocol: MailProtocol,
+    checked: boolean
+  ) {
+    if (!inventoryImportAllowedProtocols.includes(protocol)) {
+      return
+    }
+    setInventoryImportProtocols((current) =>
+      checked
+        ? [...new Set([...current, protocol])]
+        : current.filter((item) => item !== protocol)
+    )
+  }
+
   function updateAdSlotField(
-    key:
-      | "title"
-      | "description"
-      | "image_url",
+    key: "title" | "description" | "image_url",
     value: string | string[]
   ) {
     setAdSlot((current) =>
@@ -997,6 +1108,10 @@ export function AdminConsole() {
 
   async function handleTypeSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!typeEditor.mail_protocols.length) {
+      showErrorToast("请选择取件协议", "兑换类型至少需要启用一种取件协议。")
+      return
+    }
     setTypeSubmitting(true)
     try {
       if (editingType) {
@@ -1015,6 +1130,66 @@ export function AdminConsole() {
     }
   }
 
+  async function handleDeleteType() {
+    if (!deletingType) {
+      return
+    }
+
+    const targetType = deletingType
+    const targetTypeId = String(targetType.id)
+    const nextInventoryTypeId =
+      inventoryFilters.typeId === targetTypeId ? "" : inventoryFilters.typeId
+    const nextCodeTypeId =
+      codeFilters.typeId === targetTypeId ? "" : codeFilters.typeId
+    const nextRecordTypeId =
+      recordFilters.typeId === targetTypeId ? "" : recordFilters.typeId
+
+    setTypeDeleting(true)
+    try {
+      const payload = await deleteAdminType(token, targetType.id)
+
+      if (inventoryImportTypeId === targetTypeId) {
+        setInventoryImportTypeId("")
+        setInventoryImportProtocols([])
+      }
+      if (generateTypeId === targetTypeId) {
+        setGenerateTypeId("")
+        setGeneratedCodes([])
+      }
+      if (inventoryBatchEdit.typeId === targetTypeId) {
+        setInventoryBatchEdit((current) => ({ ...current, typeId: "" }))
+      }
+      if (codeBatchEdit.typeId === targetTypeId) {
+        setCodeBatchEdit((current) => ({ ...current, typeId: "" }))
+      }
+      if (editingType?.id === targetType.id) {
+        setEditingType(null)
+        setTypeDialogOpen(false)
+      }
+      if (recordDetail?.type_id === targetType.id) {
+        setRecordDetail(null)
+        setRecordDetailDialogOpen(false)
+      }
+
+      setSelectedInventoryIds([])
+      setSelectedCodeIds([])
+
+      await Promise.all([
+        loadOverviewAndTypes(),
+        loadInventory(token, { typeId: nextInventoryTypeId, page: 1 }),
+        loadCodes(token, { typeId: nextCodeTypeId, page: 1 }),
+        loadRecords(token, { typeId: nextRecordTypeId, page: 1 }),
+      ])
+
+      setDeletingType(null)
+      showSuccessToast("类型已删除", payload.message)
+    } catch (error) {
+      handleApiError(error, "兑换类型删除失败")
+    } finally {
+      setTypeDeleting(false)
+    }
+  }
+
   async function handleInventoryImport(
     event: React.FormEvent<HTMLFormElement>
   ) {
@@ -1025,7 +1200,15 @@ export function AdminConsole() {
     }
 
     if (!inventoryImportText.trim() && !inventoryImportFile) {
-      showErrorToast("请输入库存文本", "请粘贴库存文本，或直接上传文件后由后端解析。")
+      showErrorToast(
+        "请输入库存文本",
+        "请粘贴库存文本，或直接上传文件后由后端解析。"
+      )
+      return
+    }
+
+    if (!inventoryImportProtocols.length) {
+      showErrorToast("请选择取件协议", "本次导入至少需要选择一种取件协议。")
       return
     }
 
@@ -1034,18 +1217,24 @@ export function AdminConsole() {
     setInventoryImportPhase(inventoryImportFile ? "uploading" : null)
     try {
       const payload = inventoryImportFile
-        ? await importAdminInventoryFile(token, {
-            type_id: Number(inventoryImportTypeId),
-            mode: inventoryImportMode,
-            file: inventoryImportFile,
-          }, {
-            onUploadProgress: setInventoryImportProgress,
-            onPhaseChange: setInventoryImportPhase,
-          })
+        ? await importAdminInventoryFile(
+            token,
+            {
+              type_id: Number(inventoryImportTypeId),
+              mode: inventoryImportMode,
+              file: inventoryImportFile,
+              mail_protocols: inventoryImportProtocols,
+            },
+            {
+              onUploadProgress: setInventoryImportProgress,
+              onPhaseChange: setInventoryImportPhase,
+            }
+          )
         : await importAdminInventory(token, {
             type_id: Number(inventoryImportTypeId),
             mode: inventoryImportMode,
             text: inventoryImportText,
+            mail_protocols: inventoryImportProtocols,
           })
       const parseErrors = payload.data.parse.errors.slice(0, 3).join("；")
       showSuccessToast(
@@ -1335,7 +1524,9 @@ export function AdminConsole() {
     try {
       const payload = await deleteAdminCode(token, item.id)
       showSuccessToast("卡密已删除", payload.message)
-      setSelectedCodeIds((current) => current.filter((codeId) => codeId !== item.id))
+      setSelectedCodeIds((current) =>
+        current.filter((codeId) => codeId !== item.id)
+      )
       await Promise.all([loadOverviewAndTypes(), loadCodes(), loadRecords()])
     } catch (error) {
       handleApiError(error, "删除卡密失败")
@@ -1482,9 +1673,7 @@ export function AdminConsole() {
     }
   }
 
-  async function handleImportFileSelection(
-    file: File | undefined
-  ) {
+  async function handleImportFileSelection(file: File | undefined) {
     if (!file) {
       return
     }
@@ -1640,13 +1829,13 @@ export function AdminConsole() {
               <Separator />
 
               <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" asChild>
-                <a href="/redeem">
-                  <TicketIcon data-icon="inline-start" />
-                  返回兑换页
-                </a>
-              </Button>
-            </div>
+                <Button variant="outline" size="sm" asChild>
+                  <a href="/redeem">
+                    <TicketIcon data-icon="inline-start" />
+                    返回兑换页
+                  </a>
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -1757,7 +1946,7 @@ export function AdminConsole() {
         </header>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <div className="overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="[scrollbar-width:none] overflow-x-auto pb-1 [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
             <TabsList variant="line" className="min-w-max">
               <TabsTrigger value="types">
                 <Layers3Icon />
@@ -1835,14 +2024,36 @@ export function AdminConsole() {
                           <TableCell className="align-top">
                             <div className="flex flex-col gap-1">
                               <Badge variant="outline">整行数据</Badge>
-                              <Badge variant={type.mail_protocol === "graph" ? "secondary" : "outline"}>
-                                {type.mail_protocol === "graph" ? "Graph" : "IMAP"}
-                              </Badge>
+                              {normalizeMailProtocols(
+                                type.mail_protocols,
+                                type.mail_protocol
+                              ).map((protocol) => (
+                                <Badge
+                                  key={protocol}
+                                  variant={
+                                    protocol === "graph"
+                                      ? "secondary"
+                                      : "outline"
+                                  }
+                                >
+                                  {protocolLabel(protocol)}
+                                </Badge>
+                              ))}
                             </div>
                           </TableCell>
                           <TableCell className="align-top">
                             <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                              <span>库存 {type.available_inventory_count}</span>
+                              <span>
+                                库存{" "}
+                                {type.available_inventory_by_protocol
+                                  ? type.mail_protocols
+                                      .map(
+                                        (protocol) =>
+                                          `${type.available_inventory_by_protocol?.[protocol] || 0} (${protocolLabel(protocol)})`
+                                      )
+                                      .join(" · ")
+                                  : type.available_inventory_count}
+                              </span>
                               <span>卡密 {type.available_code_count}</span>
                               <span>已兑换 {type.redeemed_count}</span>
                             </div>
@@ -1855,13 +2066,23 @@ export function AdminConsole() {
                             </Badge>
                           </TableCell>
                           <TableCell className="px-4 text-right align-top">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => openEditTypeDialog(type)}
-                            >
-                              编辑
-                            </Button>
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => openEditTypeDialog(type)}
+                              >
+                                编辑
+                              </Button>
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => setDeletingType(type)}
+                              >
+                                <Trash2Icon data-icon="inline-start" />
+                                删除
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -2542,7 +2763,10 @@ export function AdminConsole() {
                                 <DropdownMenuGroup>
                                   <DropdownMenuItem
                                     onSelect={() => {
-                                      void copyTextToClipboard(item.code, "兑换码")
+                                      void copyTextToClipboard(
+                                        item.code,
+                                        "兑换码"
+                                      )
                                     }}
                                   >
                                     复制卡密
@@ -2630,7 +2854,10 @@ export function AdminConsole() {
                 {adsLoading && !adSlot ? (
                   <Skeleton className="h-96 w-full" />
                 ) : adSlot ? (
-                  <form className="flex flex-col gap-5" onSubmit={handleAdSlotsSubmit}>
+                  <form
+                    className="flex flex-col gap-5"
+                    onSubmit={handleAdSlotsSubmit}
+                  >
                     <AdSlotEditorCard
                       slot={adSlot}
                       onEnabledChange={updateAdSlotEnabled}
@@ -2648,7 +2875,6 @@ export function AdminConsole() {
                     当前未加载到广告位配置。
                   </div>
                 )}
-
               </CardContent>
             </Card>
           </TabsContent>
@@ -3083,7 +3309,20 @@ export function AdminConsole() {
                   <FieldContent>
                     <Select
                       value={inventoryImportTypeId || undefined}
-                      onValueChange={setInventoryImportTypeId}
+                      onValueChange={(value) => {
+                        setInventoryImportTypeId(value)
+                        const selectedType = types.find(
+                          (type) => String(type.id) === value
+                        )
+                        setInventoryImportProtocols(
+                          selectedType
+                            ? normalizeMailProtocols(
+                                selectedType.mail_protocols,
+                                selectedType.mail_protocol
+                              )
+                            : []
+                        )
+                      }}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="选择兑换类型" />
@@ -3100,6 +3339,36 @@ export function AdminConsole() {
                     </Select>
                   </FieldContent>
                 </Field>
+                <FieldSet>
+                  <FieldLegend variant="label">本次取件协议</FieldLegend>
+                  <FieldDescription>
+                    仅可选择当前兑换类型已启用的协议；选择多个时，这批数据可通过任一协议取件。
+                  </FieldDescription>
+                  <FieldGroup className="gap-3">
+                    {inventoryImportAllowedProtocols.map((protocol) => {
+                      const id = `inventory-import-protocol-${protocol}`
+                      return (
+                        <Field key={protocol} orientation="horizontal">
+                          <Checkbox
+                            id={id}
+                            checked={inventoryImportProtocols.includes(
+                              protocol
+                            )}
+                            onCheckedChange={(checked) =>
+                              toggleInventoryImportProtocol(
+                                protocol,
+                                checked === true
+                              )
+                            }
+                          />
+                          <FieldLabel htmlFor={id} className="font-normal">
+                            {protocolLabel(protocol)}
+                          </FieldLabel>
+                        </Field>
+                      )
+                    })}
+                  </FieldGroup>
+                </FieldSet>
                 <Field>
                   <FieldLabel>导入模式</FieldLabel>
                   <FieldContent>
@@ -3166,7 +3435,8 @@ export function AdminConsole() {
                       placeholder="account----password----oauth2id----refreshtoken"
                     />
                     <FieldDescription>
-                      支持多行粘贴；也支持上传大文件并由后端直接解析。以 <code>#</code> 开头的行会被自动忽略。
+                      支持多行粘贴；也支持上传大文件并由后端直接解析。以{" "}
+                      <code>#</code> 开头的行会被自动忽略。
                     </FieldDescription>
                   </FieldContent>
                 </Field>
@@ -3591,30 +3861,37 @@ export function AdminConsole() {
                       </Select>
                     </FieldContent>
                   </Field>
-                  <Field>
-                    <FieldLabel>取件协议</FieldLabel>
-                    <FieldContent>
-                      <Select
-                        value={typeEditor.mail_protocol}
-                        onValueChange={(value) =>
-                          updateTypeField(
-                            "mail_protocol",
-                            value === "graph" ? "graph" : "imap"
-                          )
-                        }
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectItem value="imap">IMAP</SelectItem>
-                            <SelectItem value="graph">Graph</SelectItem>
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                    </FieldContent>
-                  </Field>
+                  <FieldSet>
+                    <FieldLegend variant="label">取件协议</FieldLegend>
+                    <div className="mt-2 flex flex-row flex-wrap items-center gap-6">
+                      {MAIL_PROTOCOLS.map((protocol) => {
+                        const id = `type-protocol-${protocol}`
+                        return (
+                          <Field
+                            key={protocol}
+                            orientation="horizontal"
+                            className="flex w-auto flex-row items-center justify-start gap-2"
+                          >
+                            <Checkbox
+                              id={id}
+                              checked={typeEditor.mail_protocols.includes(
+                                protocol
+                              )}
+                              onCheckedChange={(checked) =>
+                                toggleTypeProtocol(protocol, checked === true)
+                              }
+                            />
+                            <FieldLabel
+                              htmlFor={id}
+                              className="cursor-pointer font-normal"
+                            >
+                              {protocolLabel(protocol)}
+                            </FieldLabel>
+                          </Field>
+                        )
+                      })}
+                    </div>
+                  </FieldSet>
                 </div>
               </FieldGroup>
               <div className="rounded-none border border-border/70 bg-muted/40 px-3 py-3 text-xs text-muted-foreground">
@@ -3642,6 +3919,38 @@ export function AdminConsole() {
         </DialogContent>
       </Dialog>
 
+      <AlertDialog
+        open={Boolean(deletingType)}
+        onOpenChange={(open) => {
+          if (!open && !typeDeleting) {
+            setDeletingType(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认删除兑换类型？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将永久删除“{deletingType?.name}
+              ”以及该类型下的所有库存、卡密和兑换记录，此操作无法撤销。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={typeDeleting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={typeDeleting}
+              onClick={(event) => {
+                event.preventDefault()
+                void handleDeleteType()
+              }}
+            >
+              <Trash2Icon data-icon="inline-start" />
+              {typeDeleting ? "删除中..." : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   )
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react"
 import {
+  ArrowLeftIcon,
   CheckIcon,
   CopyIcon,
   DownloadIcon,
@@ -127,7 +128,9 @@ function getAccountProtocols(account: MailAccount | null | undefined) {
   }
 
   if (account.source === "code") {
-    return [normalizeProtocol(account.mail_protocol)]
+    return normalizeProtocolList(account.allowed_protocols, [
+      normalizeProtocol(account.mail_protocol),
+    ])
   }
 
   return MAIL_PROTOCOLS
@@ -216,9 +219,14 @@ function parseAccountLine(
 }
 
 function accountFromRedeemedItem(item: RedeemedItem, index: number): MailAccount | null {
-  const protocol = normalizeProtocol(item.type.mail_protocol)
+  const protocols = normalizeProtocolList(
+    item.mail_protocols,
+    normalizeProtocolList(item.type.mail_protocols, [
+      normalizeProtocol(item.type.mail_protocol),
+    ])
+  )
   const rawLine = String(item.payload.raw_line || item.formatted_line || "").trim()
-  const parsed = parseAccountLine(rawLine, [protocol], "code")
+  const parsed = parseAccountLine(rawLine, protocols, "code")
   if (parsed) {
     return {
       ...parsed,
@@ -245,8 +253,8 @@ function accountFromRedeemedItem(item: RedeemedItem, index: number): MailAccount
     password: String(item.payload.password || item.payload.pass || ""),
     client_id: String(item.payload.oauth2id || item.payload.client_id || ""),
     refresh_token: refreshToken,
-    mail_protocol: protocol,
-    allowed_protocols: [protocol],
+    mail_protocol: protocols[0],
+    allowed_protocols: protocols,
     raw_line: rawLine,
     label: item.type.name || `账号 ${index + 1}`,
     source: "code",
@@ -698,6 +706,12 @@ export function MailConsole() {
             <Badge variant="secondary">{accounts.length}</Badge>
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" asChild>
+              <a href="/redeem">
+                <ArrowLeftIcon data-icon="inline-start" />
+                返回兑换页面
+              </a>
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setImportDialogOpen(true)}>
               <UploadIcon data-icon="inline-start" />
               导入账号

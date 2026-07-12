@@ -20,6 +20,7 @@ import {
   createRedeemEmailType,
   deleteRedeemCode,
   deleteRedeemCodeBatch,
+  deleteRedeemEmailType,
   deleteRedeemInventory,
   deleteRedeemInventoryBatch,
   ensureAccountsLoaded,
@@ -246,9 +247,14 @@ function serializeRedeemTypeForPublic(type) {
     name: type.name,
     description: type.description,
     mail_protocol: type.mail_protocol || "imap",
+    mail_protocols: type.mail_protocols || [type.mail_protocol || "imap"],
     import_delimiter: type.import_delimiter,
     is_active: type.is_active,
     available_inventory_count: type.available_inventory_count,
+    available_inventory_by_protocol: type.available_inventory_by_protocol || {
+      imap: 0,
+      graph: 0
+    },
     available_code_count: type.available_code_count,
     redeemed_count: type.redeemed_count,
     field_schema: (type.field_schema || []).map((field) => ({
@@ -268,6 +274,7 @@ function createPublicRedeemRecordType(record) {
     name: record.type_name,
     description: "",
     mail_protocol: record.mail_protocol || "imap",
+    mail_protocols: record.mail_protocols || [record.mail_protocol || "imap"],
     field_schema: record.field_schema,
     import_delimiter: record.import_delimiter
   };
@@ -748,6 +755,7 @@ app.post("/api/redeem/query", (req, res) => {
             name: firstRecord.type_name,
             description: "",
             mail_protocol: firstRecord.mail_protocol || "imap",
+            mail_protocols: firstRecord.mail_protocols || [firstRecord.mail_protocol || "imap"],
             import_delimiter: firstRecord.import_delimiter
           },
           items: records.map(formatPublicRedeemRecord)
@@ -784,10 +792,10 @@ app.post("/api/redeem/exchange", (req, res) => {
           redeemed_at: result.code.redeemed_at,
           code: result.code.code,
           items: result.inventories.map((inventory) =>
-            formatRedeemedInventory(result.type, inventory.payload)
+            formatRedeemedInventory({ ...result.type, mail_protocols: inventory.mail_protocols }, inventory.payload)
           ),
           ...(result.inventories[0]
-            ? formatRedeemedInventory(result.type, result.inventories[0].payload)
+            ? formatRedeemedInventory({ ...result.type, mail_protocols: result.inventories[0].mail_protocols }, result.inventories[0].payload)
             : {})
         },
         "兑换成功"
@@ -1014,6 +1022,31 @@ app.put("/api/redeem/admin/types/:typeId", requireAdmin, (req, res) => {
   }
 });
 
+app.delete("/api/redeem/admin/types/:typeId", requireAdmin, (req, res) => {
+  const typeId = Number(req.params.typeId);
+  if (!Number.isInteger(typeId) || typeId < 1) {
+    res.status(400).json(fail("兑换类型不存在"));
+    return;
+  }
+
+  try {
+    const deleted = deleteRedeemEmailType(typeId);
+    if (!deleted) {
+      res.status(404).json(fail("兑换类型不存在"));
+      return;
+    }
+
+    res.json(
+      ok(
+        deleted,
+        `兑换类型“${deleted.type.name}”已删除，同时删除 ${deleted.deleted_inventory_count} 条库存、${deleted.deleted_code_count} 个兑换码和 ${deleted.deleted_record_count} 条兑换记录`
+      )
+    );
+  } catch (error) {
+    res.status(400).json(fail(error.message || "兑换类型删除失败"));
+  }
+});
+
 app.get("/api/redeem/admin/inventory", requireAdmin, (req, res) => {
   const result = getRedeemInventoryPaged({
     type_id: req.query.type_id,
@@ -1032,6 +1065,14 @@ app.post("/api/redeem/admin/inventory/import", requireAdmin, upload.single("file
     : "";
   const text = String(req.body?.text || uploadedText || "").trim();
   const mode = String(req.body?.mode || "append");
+  let mailProtocols = req.body?.mail_protocols;
+  if (typeof mailProtocols === "string") {
+    try {
+      mailProtocols = JSON.parse(mailProtocols);
+    } catch {
+      mailProtocols = mailProtocols.split(",");
+    }
+  }
 
   if (!Number.isInteger(typeId) || typeId < 1) {
     res.status(400).json(fail("请选择兑换类型"));
@@ -1068,7 +1109,8 @@ app.post("/api/redeem/admin/inventory/import", requireAdmin, upload.single("file
     const imported = importRedeemInventory({
       type_id: typeId,
       items: parsed.items,
-      mode
+      mode,
+      mail_protocols: mailProtocols
     });
 
     const message = parsed.error_count

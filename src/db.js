@@ -5,6 +5,7 @@ import {
   generateRedeemCode,
   normalizeRedeemCode,
   normalizeMailProtocol,
+  normalizeMailProtocols,
   parseMailboxAccountLine,
   parseRedeemFieldSchema,
   payloadToSearchText,
@@ -13,6 +14,9 @@ import {
 
 export const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
+const shouldSeedDefaultRedeemType = !db
+  .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redeem_email_types' LIMIT 1")
+  .get();
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS accounts (
@@ -55,6 +59,7 @@ CREATE TABLE IF NOT EXISTS redeem_email_types (
   description TEXT DEFAULT '',
   field_schema TEXT NOT NULL,
   mail_protocol TEXT NOT NULL DEFAULT 'imap',
+  mail_protocols TEXT NOT NULL DEFAULT '["imap"]',
   import_delimiter TEXT NOT NULL DEFAULT '----',
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -67,6 +72,7 @@ CREATE TABLE IF NOT EXISTS redeem_inventory (
   serialized_value TEXT NOT NULL,
   search_text TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'available',
+  pickup_protocols TEXT NOT NULL DEFAULT '["imap"]',
   redeemed_code_id INTEGER,
   redeemed_at TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -121,11 +127,21 @@ function ensureColumn(tableName, columnName, columnDefinition) {
   if (!exists) {
     db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
   }
+  return !exists;
 }
 
 ensureColumn("redeem_codes", "quantity", "INTEGER NOT NULL DEFAULT 1");
 ensureColumn("redeem_codes", "redeemed_quantity", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("redeem_email_types", "mail_protocol", "TEXT NOT NULL DEFAULT 'imap'");
+const addedTypeProtocols = ensureColumn("redeem_email_types", "mail_protocols", "TEXT NOT NULL DEFAULT '[\"imap\"]'");
+const addedInventoryProtocols = ensureColumn("redeem_inventory", "pickup_protocols", "TEXT NOT NULL DEFAULT '[\"imap\"]'");
+
+if (addedTypeProtocols) {
+  db.prepare("UPDATE redeem_email_types SET mail_protocols = json_array(mail_protocol)").run();
+}
+if (addedInventoryProtocols) {
+  db.prepare(`UPDATE redeem_inventory SET pickup_protocols = json_array((SELECT mail_protocol FROM redeem_email_types WHERE id = redeem_inventory.type_id))`).run();
+}
 
 function rowToAccount(row) {
   return {
@@ -163,6 +179,40 @@ function buildRedeemTypeSelect() {
       ) AS available_inventory_count,
       (
         SELECT COUNT(*)
+        FROM redeem_inventory inventory
+        WHERE
+          inventory.type_id = t.id
+          AND inventory.status = 'available'
+          AND EXISTS (
+            SELECT 1
+            FROM json_each(
+              CASE
+                WHEN json_valid(inventory.pickup_protocols) THEN inventory.pickup_protocols
+                ELSE json_array(t.mail_protocol)
+              END
+            ) protocols
+            WHERE protocols.value = 'imap'
+          )
+      ) AS available_imap_inventory_count,
+      (
+        SELECT COUNT(*)
+        FROM redeem_inventory inventory
+        WHERE
+          inventory.type_id = t.id
+          AND inventory.status = 'available'
+          AND EXISTS (
+            SELECT 1
+            FROM json_each(
+              CASE
+                WHEN json_valid(inventory.pickup_protocols) THEN inventory.pickup_protocols
+                ELSE json_array(t.mail_protocol)
+              END
+            ) protocols
+            WHERE protocols.value = 'graph'
+          )
+      ) AS available_graph_inventory_count,
+      (
+        SELECT COUNT(*)
         FROM redeem_codes codes
         WHERE
           codes.type_id = t.id
@@ -189,10 +239,15 @@ function rowToRedeemType(row) {
     name: row.name,
     description: row.description || "",
     field_schema: parseRedeemFieldSchema(row.field_schema),
-    mail_protocol: normalizeMailProtocol(row.mail_protocol),
+    mail_protocols: normalizeMailProtocols(row.mail_protocols, [row.mail_protocol]),
+    mail_protocol: normalizeMailProtocols(row.mail_protocols, [row.mail_protocol])[0],
     import_delimiter: row.import_delimiter || "----",
     is_active: Boolean(row.is_active),
     available_inventory_count: Number(row.available_inventory_count || 0),
+    available_inventory_by_protocol: {
+      imap: Number(row.available_imap_inventory_count || 0),
+      graph: Number(row.available_graph_inventory_count || 0)
+    },
     available_code_count: Number(row.available_code_count || 0),
     redeemed_count: Number(row.redeemed_count || 0),
     created_at: row.created_at || "",
@@ -211,7 +266,8 @@ function rowToRedeemInventory(row) {
     type_name: row.type_name || "",
     type_slug: row.type_slug || "",
     field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
-    mail_protocol: normalizeMailProtocol(row.mail_protocol),
+    mail_protocols: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol]),
+    mail_protocol: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol])[0],
     import_delimiter: row.import_delimiter || "----",
     payload: parseJson(row.payload_json, {}),
     serialized_value: row.serialized_value || "",
@@ -393,7 +449,8 @@ function rowToRedeemRecord(row) {
     type_name: row.type_name || "",
     type_slug: row.type_slug || "",
     field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
-    mail_protocol: normalizeMailProtocol(row.mail_protocol),
+    mail_protocols: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol]),
+    mail_protocol: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol])[0],
     import_delimiter: row.import_delimiter || "----",
     payload: parseJson(row.payload_json, {}),
     requester_ip: row.requester_ip || "",
@@ -578,7 +635,8 @@ export function getMailboxAccountFromInventory(email) {
       type_id: row.type_id,
       type_slug: row.type_slug,
       type_name: row.type_name,
-      mail_protocol: normalizeMailProtocol(row.mail_protocol),
+      mail_protocols: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol]),
+      mail_protocol: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol])[0],
       payload: payload,
       field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
       import_delimiter: row.import_delimiter || "----"
@@ -697,12 +755,13 @@ export function createRedeemEmailType(type) {
           description,
           field_schema,
           mail_protocol,
+          mail_protocols,
           import_delimiter,
           is_active,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `
     )
     .run(
@@ -710,7 +769,8 @@ export function createRedeemEmailType(type) {
       type.name,
       type.description || "",
       JSON.stringify(type.field_schema),
-      normalizeMailProtocol(type.mail_protocol),
+      normalizeMailProtocols(type.mail_protocols, [type.mail_protocol])[0],
+      JSON.stringify(normalizeMailProtocols(type.mail_protocols, [type.mail_protocol])),
       type.import_delimiter || "----",
       type.is_active ? 1 : 0
     );
@@ -729,6 +789,7 @@ export function updateRedeemEmailType(typeId, type) {
           description = ?,
           field_schema = ?,
           mail_protocol = ?,
+          mail_protocols = ?,
           import_delimiter = ?,
           is_active = ?,
           updated_at = CURRENT_TIMESTAMP
@@ -740,13 +801,57 @@ export function updateRedeemEmailType(typeId, type) {
       type.name,
       type.description || "",
       JSON.stringify(type.field_schema),
-      normalizeMailProtocol(type.mail_protocol),
+      normalizeMailProtocols(type.mail_protocols, [type.mail_protocol])[0],
+      JSON.stringify(normalizeMailProtocols(type.mail_protocols, [type.mail_protocol])),
       type.import_delimiter || "----",
       type.is_active ? 1 : 0,
       Number(typeId)
     );
 
   return result.changes > 0 ? getRedeemEmailTypeById(typeId) : null;
+}
+
+export function deleteRedeemEmailType(typeId) {
+  const targetId = Number(typeId);
+  if (!Number.isInteger(targetId) || targetId < 1) {
+    return null;
+  }
+
+  const tx = db.transaction((id) => {
+    const type = getRedeemEmailTypeById(id);
+    if (!type) {
+      return null;
+    }
+
+    // Records reference both inventory and codes, so remove them first even
+    // though older databases do not declare foreign-key constraints.
+    const deletedRecordCount = db
+      .prepare("DELETE FROM redeem_records WHERE type_id = ?")
+      .run(id).changes;
+    const deletedInventoryCount = db
+      .prepare("DELETE FROM redeem_inventory WHERE type_id = ?")
+      .run(id).changes;
+    const deletedCodeCount = db
+      .prepare("DELETE FROM redeem_codes WHERE type_id = ?")
+      .run(id).changes;
+    const deletedTypeCount = db
+      .prepare("DELETE FROM redeem_email_types WHERE id = ?")
+      .run(id).changes;
+
+    if (deletedTypeCount !== 1) {
+      throw new Error("兑换类型删除失败");
+    }
+
+    return {
+      type,
+      deleted_type_count: deletedTypeCount,
+      deleted_inventory_count: deletedInventoryCount,
+      deleted_code_count: deletedCodeCount,
+      deleted_record_count: deletedRecordCount
+    };
+  });
+
+  return tx(targetId);
 }
 
 export function ensureDefaultRedeemEmailType() {
@@ -869,13 +974,18 @@ export function getRedeemInventoryPaged({
   };
 }
 
-export function importRedeemInventory({ type_id, items = [], mode = "append" }) {
+export function importRedeemInventory({ type_id, items = [], mode = "append", mail_protocols = [] }) {
   const type = getRedeemEmailTypeById(type_id);
   if (!type) {
     throw new Error("兑换类型不存在");
   }
 
   const normalizedMode = mode === "replace_available" ? "replace_available" : "append";
+  const allowedProtocols = normalizeMailProtocols(type.mail_protocols, [type.mail_protocol]);
+  const pickupProtocols = normalizeMailProtocols(mail_protocols, [type.mail_protocol]);
+  if (pickupProtocols.some((protocol) => !allowedProtocols.includes(protocol))) {
+    throw new Error("导入协议不在该兑换类型允许的协议范围内");
+  }
   const tx = db.transaction((targetType, nextItems, nextMode) => {
     let cleared = 0;
     let added = 0;
@@ -894,13 +1004,16 @@ export function importRedeemInventory({ type_id, items = [], mode = "append" }) 
           payload_json,
           serialized_value,
           search_text,
+          pickup_protocols,
           status,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, 'available', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, 'available', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `
     );
+    const existingStmt = db.prepare("SELECT id, pickup_protocols FROM redeem_inventory WHERE type_id = ? AND serialized_value = ? LIMIT 1");
+    const mergeProtocolsStmt = db.prepare("UPDATE redeem_inventory SET pickup_protocols = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
 
     for (const item of nextItems) {
       const payload = item.payload || {};
@@ -916,12 +1029,21 @@ export function importRedeemInventory({ type_id, items = [], mode = "append" }) 
         targetType.id,
         JSON.stringify(payload),
         serializedValue,
-        searchText
+        searchText,
+        JSON.stringify(pickupProtocols)
       );
 
       if (result.changes > 0) {
         added += 1;
       } else {
+        const existing = existingStmt.get(targetType.id, serializedValue);
+        if (existing) {
+          const merged = normalizeMailProtocols([
+            ...normalizeMailProtocols(existing.pickup_protocols, []),
+            ...pickupProtocols
+          ], pickupProtocols);
+          mergeProtocolsStmt.run(JSON.stringify(merged), existing.id);
+        }
         skipped += 1;
       }
     }
@@ -1372,9 +1494,11 @@ export function getRedeemRecordsByCodeId(codeId) {
           types.slug AS type_slug,
           types.field_schema,
           types.mail_protocol,
+          inventory.pickup_protocols,
           types.import_delimiter
         FROM redeem_records records
         JOIN redeem_email_types types ON types.id = records.type_id
+        LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id
         WHERE records.code_id = ?
         ORDER BY records.id ASC
       `
@@ -1407,9 +1531,11 @@ export function getRedeemRecordsByCodeIdPaged(codeId, { page = 1, page_size = 10
           types.slug AS type_slug,
           types.field_schema,
           types.mail_protocol,
+          inventory.pickup_protocols,
           types.import_delimiter
         FROM redeem_records records
         JOIN redeem_email_types types ON types.id = records.type_id
+        LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id
         WHERE records.code_id = ?
         ORDER BY records.id ASC
         LIMIT ? OFFSET ?
@@ -1738,6 +1864,7 @@ export function redeemByCode({
             types.slug AS type_slug,
             types.field_schema,
             types.mail_protocol,
+            types.mail_protocols,
             types.import_delimiter,
             types.description
           FROM redeem_codes codes
@@ -1765,20 +1892,75 @@ export function redeemByCode({
     }
 
     const quantity = Math.max(1, Number(codeRow.quantity || 1));
+    const allowedProtocols = normalizeMailProtocols(codeRow.mail_protocols, [codeRow.mail_protocol]);
+    const protocolCounts = Object.fromEntries(
+      allowedProtocols.map((protocol) => {
+        const row = db
+          .prepare(
+            `
+              SELECT COUNT(*) AS count
+              FROM redeem_inventory inventory
+              WHERE
+                inventory.type_id = ?
+                AND inventory.status = 'available'
+                AND EXISTS (
+                  SELECT 1
+                  FROM json_each(
+                    CASE
+                      WHEN json_valid(inventory.pickup_protocols) THEN inventory.pickup_protocols
+                      ELSE json_array(?)
+                    END
+                  ) protocols
+                  WHERE protocols.value = ?
+                )
+            `
+          )
+          .get(codeRow.type_id, codeRow.mail_protocol, protocol);
+        return [protocol, Number(row?.count || 0)];
+      })
+    );
+    const selectedProtocol = allowedProtocols.find(
+      (protocol) => protocolCounts[protocol] >= quantity
+    );
+
+    if (!selectedProtocol) {
+      const countSummary = allowedProtocols
+        .map(
+          (protocol) =>
+            `${protocol === "graph" ? "Graph" : "IMAP"} ${protocolCounts[protocol] || 0} 份`
+        )
+        .join("，");
+      throw new Error(
+        `当前类型没有单一协议的足够库存，至少需要 ${quantity} 份（${countSummary}）`
+      );
+    }
+
     const inventoryRows = db
       .prepare(
         `
           SELECT *
-          FROM redeem_inventory
-          WHERE type_id = ? AND status = 'available'
-          ORDER BY id ASC
+          FROM redeem_inventory inventory
+          WHERE
+            inventory.type_id = ?
+            AND inventory.status = 'available'
+            AND EXISTS (
+              SELECT 1
+              FROM json_each(
+                CASE
+                  WHEN json_valid(inventory.pickup_protocols) THEN inventory.pickup_protocols
+                  ELSE json_array(?)
+                END
+              ) protocols
+              WHERE protocols.value = ?
+            )
+          ORDER BY inventory.id ASC
           LIMIT ?
         `
       )
-      .all(codeRow.type_id, quantity);
+      .all(codeRow.type_id, codeRow.mail_protocol, selectedProtocol, quantity);
 
     if (inventoryRows.length < quantity) {
-      throw new Error(`当前类型库存不足，至少需要 ${quantity} 份可用库存`);
+      throw new Error("库存领取冲突，请稍后重试");
     }
 
     const redeemedAt = nowTimestamp();
@@ -1787,6 +1969,7 @@ export function redeemByCode({
         UPDATE redeem_inventory
         SET
           status = 'redeemed',
+          pickup_protocols = ?,
           redeemed_code_id = ?,
           redeemed_at = ?,
           updated_at = CURRENT_TIMESTAMP
@@ -1813,7 +1996,12 @@ export function redeemByCode({
     const recordIds = [];
 
     for (const inventoryRow of inventoryRows) {
-      const inventoryUpdate = updateInventoryStmt.run(codeRow.id, redeemedAt, inventoryRow.id);
+      const inventoryUpdate = updateInventoryStmt.run(
+        JSON.stringify([selectedProtocol]),
+        codeRow.id,
+        redeemedAt,
+        inventoryRow.id
+      );
 
       if (!inventoryUpdate.changes) {
         throw new Error("库存领取失败，请稍后重试");
@@ -1835,6 +2023,7 @@ export function redeemByCode({
       inventories.push(
         rowToRedeemInventory({
           ...inventoryRow,
+          pickup_protocols: JSON.stringify([selectedProtocol]),
           type_name: codeRow.type_name,
           type_slug: codeRow.type_slug,
           field_schema: codeRow.field_schema,
@@ -1883,7 +2072,7 @@ export function redeemByCode({
     };
   });
 
-  return tx(
+  return tx.immediate(
     normalizedCode,
     String(requester_ip || "").trim(),
     String(requester_user_agent || "").trim()
@@ -1965,7 +2154,9 @@ export function getRedeemRecordsPaged({
 }
 
 export function ensureAccountsLoaded() {
-  ensureDefaultRedeemEmailType();
+  if (shouldSeedDefaultRedeemType) {
+    ensureDefaultRedeemEmailType();
+  }
   return true;
 }
 

@@ -80,6 +80,25 @@ export function normalizeMailProtocol(value, fallback = "imap") {
   return MAIL_PROTOCOLS.includes(normalized) ? normalized : "imap";
 }
 
+export function normalizeMailProtocols(value, fallback = ["imap"]) {
+  let values = value;
+  if (typeof values === "string") {
+    try {
+      const parsed = JSON.parse(values);
+      values = Array.isArray(parsed) ? parsed : [values];
+    } catch {
+      values = values.split(",");
+    }
+  }
+
+  const normalized = [...new Set((Array.isArray(values) ? values : []).map((item) =>
+    String(item || "").trim().toLowerCase()
+  ).filter((item) => MAIL_PROTOCOLS.includes(item)))];
+  if (normalized.length) return normalized;
+  const fallbackValues = Array.isArray(fallback) ? fallback : [fallback];
+  return [...new Set(fallbackValues.map((item) => normalizeMailProtocol(item)))];
+}
+
 function normalizeFieldKey(value, index) {
   const fallbackKey = `field_${index + 1}`;
   const normalized = String(value || fallbackKey)
@@ -96,6 +115,7 @@ export const DEFAULT_REDEEM_EMAIL_TYPE = {
   name: "Outlook OAuth 邮箱",
   description: "默认邮箱兑换类型，按整行数据保存，兼容 Outlook OAuth 四段配置。",
   mail_protocol: "imap",
+  mail_protocols: ["imap"],
   import_delimiter: "----",
   is_active: true,
   field_schema: RAW_LINE_FIELD_SCHEMA
@@ -162,7 +182,8 @@ export function normalizeRedeemEmailTypeInput(payload = {}, options = {}) {
     name,
     slug,
     description: String(payload.description || "").trim(),
-    mail_protocol: normalizeMailProtocol(payload.mail_protocol),
+    mail_protocols: normalizeMailProtocols(payload.mail_protocols, [payload.mail_protocol || "imap"]),
+    mail_protocol: normalizeMailProtocols(payload.mail_protocols, [payload.mail_protocol || "imap"])[0],
     field_schema,
     import_delimiter,
     is_active: toBoolean(payload.is_active, true)
@@ -306,7 +327,8 @@ export function formatRedeemedInventory(type, payload = {}) {
       slug: type?.slug || "",
       name: type?.name || "",
       description: type?.description || "",
-      mail_protocol: normalizeMailProtocol(type?.mail_protocol),
+      mail_protocol: normalizeMailProtocols(type?.mail_protocols, [type?.mail_protocol || "imap"])[0],
+      mail_protocols: normalizeMailProtocols(type?.mail_protocols, [type?.mail_protocol || "imap"]),
       import_delimiter: delimiter
     },
     fields: fieldSchema.map((field) => ({

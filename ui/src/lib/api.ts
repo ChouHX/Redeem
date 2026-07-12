@@ -102,10 +102,12 @@ export type RedeemType = {
   slug: string
   name: string
   description: string
-  mail_protocol: MailProtocol
+  mail_protocol?: MailProtocol
+  mail_protocols: MailProtocol[]
   import_delimiter: string
   is_active: boolean
   available_inventory_count: number
+  available_inventory_by_protocol?: Partial<Record<MailProtocol, number>>
   available_code_count: number
   redeemed_count: number
   field_schema: FieldSchema[]
@@ -120,12 +122,14 @@ export type RedeemFieldValue = FieldSchema & {
 }
 
 export type RedeemedItem = {
+  mail_protocols?: MailProtocol[]
   type: {
     id: number | null
     slug: string
     name: string
     description: string
     mail_protocol?: MailProtocol
+    mail_protocols?: MailProtocol[]
     import_delimiter: string
   }
   fields: RedeemFieldValue[]
@@ -146,6 +150,7 @@ export type RedeemExchangeResult = {
     name: string
     description: string
     mail_protocol?: MailProtocol
+    mail_protocols?: MailProtocol[]
     import_delimiter: string
   }
   items: RedeemedItem[]
@@ -164,6 +169,7 @@ export type RedeemOrderQueryResult = {
     name: string
     description: string
     mail_protocol?: MailProtocol
+    mail_protocols?: MailProtocol[]
     import_delimiter: string
   }
   items: RedeemedItem[]
@@ -231,6 +237,7 @@ export type RedeemInventoryItem = {
   type_slug: string
   field_schema?: FieldSchema[]
   mail_protocol?: MailProtocol
+  mail_protocols?: MailProtocol[]
   import_delimiter: string
   payload: Record<string, string>
   serialized_value: string
@@ -290,6 +297,14 @@ export type CodeBatchDeleteResult = {
   total_count: number
 }
 
+export type RedeemTypeDeleteResult = {
+  type: RedeemType
+  deleted_type_count: number
+  deleted_inventory_count: number
+  deleted_code_count: number
+  deleted_record_count: number
+}
+
 export type RedeemRecordItem = {
   id: number
   code_id: number
@@ -301,6 +316,7 @@ export type RedeemRecordItem = {
   type_slug: string
   field_schema?: FieldSchema[]
   mail_protocol?: MailProtocol
+  mail_protocols?: MailProtocol[]
   import_delimiter: string
   payload: Record<string, string>
   requester_ip: string
@@ -316,6 +332,7 @@ export type RedeemRecordGroup = {
   type_name: string
   type_slug: string
   mail_protocol?: MailProtocol
+  mail_protocols?: MailProtocol[]
   item_count: number
   redeemed_at: string
   requester_ip: string
@@ -353,7 +370,7 @@ export type TypeFormPayload = {
   name: string
   slug: string
   description: string
-  mail_protocol: MailProtocol
+  mail_protocols: MailProtocol[]
   import_delimiter: string
   is_active: boolean
   field_schema: FieldSchema[]
@@ -694,6 +711,16 @@ export async function updateAdminType(
   return payload
 }
 
+export async function deleteAdminType(token: string, typeId: number) {
+  return apiRequest<RedeemTypeDeleteResult>(
+    `/api/redeem/admin/types/${typeId}`,
+    {
+      method: "DELETE",
+      token,
+    }
+  )
+}
+
 export async function fetchAdminInventory(
   token: string,
   params: {
@@ -720,6 +747,7 @@ export async function importAdminInventory(
     type_id: number
     mode: string
     text: string
+    mail_protocols: MailProtocol[]
   }
 ) {
   const payload = await apiRequest<InventoryImportResult>(
@@ -739,6 +767,7 @@ export async function importAdminInventoryFile(
     type_id: number
     mode: string
     file: File
+    mail_protocols: MailProtocol[]
   },
   options: {
     onUploadProgress?: (progress: number) => void
@@ -748,53 +777,65 @@ export async function importAdminInventoryFile(
   const formData = new FormData()
   formData.set("type_id", String(body.type_id))
   formData.set("mode", body.mode)
+  formData.set("mail_protocols", JSON.stringify(body.mail_protocols))
   formData.set("file", body.file)
 
-  return await new Promise<ApiEnvelope<InventoryImportResult>>((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open("POST", resolveApiUrl("/api/redeem/admin/inventory/import"), true)
-
-    if (token) {
-      xhr.setRequestHeader("Authorization", `Bearer ${token}`)
-    }
-
-    xhr.upload.onprogress = (event) => {
-      options.onPhaseChange?.("uploading")
-      if (event.lengthComputable) {
-        options.onUploadProgress?.(
-          Math.max(1, Math.min(95, Math.round((event.loaded / event.total) * 90)))
-        )
-      }
-    }
-
-    xhr.upload.onload = () => {
-      options.onPhaseChange?.("processing")
-      options.onUploadProgress?.(95)
-    }
-
-    xhr.onerror = () => {
-      reject(new ApiError("上传失败，请稍后重试", 0, null))
-    }
-
-    xhr.onload = () => {
-      const payload = JSON.parse(xhr.responseText || "null") as ApiEnvelope<InventoryImportResult> | null
-      if (xhr.status >= 200 && xhr.status < 300 && payload?.success) {
-        options.onUploadProgress?.(100)
-        resolve(payload)
-        return
-      }
-
-      reject(
-        new ApiError(
-          payload?.message || `请求失败 (${xhr.status})`,
-          xhr.status,
-          payload
-        )
+  return await new Promise<ApiEnvelope<InventoryImportResult>>(
+    (resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open(
+        "POST",
+        resolveApiUrl("/api/redeem/admin/inventory/import"),
+        true
       )
-    }
 
-    xhr.send(formData)
-  })
+      if (token) {
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+      }
+
+      xhr.upload.onprogress = (event) => {
+        options.onPhaseChange?.("uploading")
+        if (event.lengthComputable) {
+          options.onUploadProgress?.(
+            Math.max(
+              1,
+              Math.min(95, Math.round((event.loaded / event.total) * 90))
+            )
+          )
+        }
+      }
+
+      xhr.upload.onload = () => {
+        options.onPhaseChange?.("processing")
+        options.onUploadProgress?.(95)
+      }
+
+      xhr.onerror = () => {
+        reject(new ApiError("上传失败，请稍后重试", 0, null))
+      }
+
+      xhr.onload = () => {
+        const payload = JSON.parse(
+          xhr.responseText || "null"
+        ) as ApiEnvelope<InventoryImportResult> | null
+        if (xhr.status >= 200 && xhr.status < 300 && payload?.success) {
+          options.onUploadProgress?.(100)
+          resolve(payload)
+          return
+        }
+
+        reject(
+          new ApiError(
+            payload?.message || `请求失败 (${xhr.status})`,
+            xhr.status,
+            payload
+          )
+        )
+      }
+
+      xhr.send(formData)
+    }
+  )
 }
 
 export async function deleteAdminInventory(token: string, inventoryId: number) {
