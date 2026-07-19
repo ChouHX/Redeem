@@ -1,5 +1,10 @@
 import Database from "better-sqlite3";
-import { DB_PATH, CLIENT_ID, DEFAULT_EMAIL_LIMIT } from "./config.js";
+import {
+  DB_PATH,
+  CLIENT_ID,
+  DEFAULT_EMAIL_LIMIT,
+  REDEEM_ACCESS_TTL_MS,
+} from "./config.js";
 import {
   DEFAULT_REDEEM_EMAIL_TYPE,
   generateRedeemCode,
@@ -9,13 +14,15 @@ import {
   parseMailboxAccountLine,
   parseRedeemFieldSchema,
   payloadToSearchText,
-  serializeInventoryPayload
+  serializeInventoryPayload,
 } from "./redeem.js";
 
 export const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 const shouldSeedDefaultRedeemType = !db
-  .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redeem_email_types' LIMIT 1")
+  .prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redeem_email_types' LIMIT 1",
+  )
   .get();
 
 db.exec(`
@@ -106,6 +113,36 @@ CREATE TABLE IF NOT EXISTS redeem_records (
   requester_user_agent TEXT DEFAULT '',
   redeemed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS token_check_jobs (
+  id TEXT PRIMARY KEY,
+  type_id INTEGER NOT NULL,
+  inventory_status TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  delete_abnormal INTEGER NOT NULL DEFAULT 0,
+  total_count INTEGER NOT NULL DEFAULT 0,
+  processed_count INTEGER NOT NULL DEFAULT 0,
+  live_count INTEGER NOT NULL DEFAULT 0,
+  expired_count INTEGER NOT NULL DEFAULT 0,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  deleted_count INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at TEXT,
+  error_message TEXT DEFAULT '',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS token_check_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL,
+  inventory_id INTEGER NOT NULL,
+  email TEXT DEFAULT '',
+  serialized_value TEXT NOT NULL DEFAULT '',
+  protocol TEXT NOT NULL DEFAULT 'imap',
+  outcome TEXT NOT NULL,
+  error_code TEXT DEFAULT '',
+  error_message TEXT DEFAULT '',
+  checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
 CREATE INDEX IF NOT EXISTS idx_account_tags_email ON account_tags(email);
 CREATE INDEX IF NOT EXISTS idx_email_cache_email ON email_cache(email);
@@ -116,6 +153,8 @@ CREATE INDEX IF NOT EXISTS idx_redeem_codes_type_status ON redeem_codes(type_id,
 CREATE INDEX IF NOT EXISTS idx_redeem_codes_normalized_code ON redeem_codes(normalized_code);
 CREATE INDEX IF NOT EXISTS idx_redeem_records_type_id ON redeem_records(type_id);
 CREATE INDEX IF NOT EXISTS idx_redeem_records_code_id ON redeem_records(code_id);
+CREATE INDEX IF NOT EXISTS idx_token_check_jobs_started_at ON token_check_jobs(started_at);
+CREATE INDEX IF NOT EXISTS idx_token_check_results_job_outcome ON token_check_results(job_id, outcome);
 `);
 
 function ensureColumn(tableName, columnName, columnDefinition) {
@@ -125,29 +164,49 @@ function ensureColumn(tableName, columnName, columnDefinition) {
     .some((column) => column.name === columnName);
 
   if (!exists) {
-    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
+    db.exec(
+      `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`,
+    );
   }
   return !exists;
 }
 
 ensureColumn("redeem_codes", "quantity", "INTEGER NOT NULL DEFAULT 1");
 ensureColumn("redeem_codes", "redeemed_quantity", "INTEGER NOT NULL DEFAULT 0");
-ensureColumn("redeem_email_types", "mail_protocol", "TEXT NOT NULL DEFAULT 'imap'");
-const addedTypeProtocols = ensureColumn("redeem_email_types", "mail_protocols", "TEXT NOT NULL DEFAULT '[\"imap\"]'");
-const addedInventoryProtocols = ensureColumn("redeem_inventory", "pickup_protocols", "TEXT NOT NULL DEFAULT '[\"imap\"]'");
+ensureColumn(
+  "redeem_email_types",
+  "mail_protocol",
+  "TEXT NOT NULL DEFAULT 'imap'",
+);
+const addedTypeProtocols = ensureColumn(
+  "redeem_email_types",
+  "mail_protocols",
+  "TEXT NOT NULL DEFAULT '[\"imap\"]'",
+);
+const addedInventoryProtocols = ensureColumn(
+  "redeem_inventory",
+  "pickup_protocols",
+  "TEXT NOT NULL DEFAULT '[\"imap\"]'",
+);
 
 if (addedTypeProtocols) {
-  db.prepare("UPDATE redeem_email_types SET mail_protocols = json_array(mail_protocol)").run();
+  db.prepare(
+    "UPDATE redeem_email_types SET mail_protocols = json_array(mail_protocol)",
+  ).run();
 }
 if (addedInventoryProtocols) {
-  db.prepare(`UPDATE redeem_inventory SET pickup_protocols = json_array((SELECT mail_protocol FROM redeem_email_types WHERE id = redeem_inventory.type_id))`).run();
+  db.prepare(
+    `UPDATE redeem_inventory SET pickup_protocols = json_array((SELECT mail_protocol FROM redeem_email_types WHERE id = redeem_inventory.type_id))`,
+  ).run();
 }
+ensureColumn("redeem_codes", "data_deleted_at", "TEXT");
+ensureColumn("redeem_codes", "data_deleted_reason", "TEXT DEFAULT ''");
 
 function rowToAccount(row) {
   return {
     password: row.password || "",
     client_id: row.client_id || "",
-    refresh_token: row.refresh_token || ""
+    refresh_token: row.refresh_token || "",
   };
 }
 
@@ -239,19 +298,23 @@ function rowToRedeemType(row) {
     name: row.name,
     description: row.description || "",
     field_schema: parseRedeemFieldSchema(row.field_schema),
-    mail_protocols: normalizeMailProtocols(row.mail_protocols, [row.mail_protocol]),
-    mail_protocol: normalizeMailProtocols(row.mail_protocols, [row.mail_protocol])[0],
+    mail_protocols: normalizeMailProtocols(row.mail_protocols, [
+      row.mail_protocol,
+    ]),
+    mail_protocol: normalizeMailProtocols(row.mail_protocols, [
+      row.mail_protocol,
+    ])[0],
     import_delimiter: row.import_delimiter || "----",
     is_active: Boolean(row.is_active),
     available_inventory_count: Number(row.available_inventory_count || 0),
     available_inventory_by_protocol: {
       imap: Number(row.available_imap_inventory_count || 0),
-      graph: Number(row.available_graph_inventory_count || 0)
+      graph: Number(row.available_graph_inventory_count || 0),
     },
     available_code_count: Number(row.available_code_count || 0),
     redeemed_count: Number(row.redeemed_count || 0),
     created_at: row.created_at || "",
-    updated_at: row.updated_at || ""
+    updated_at: row.updated_at || "",
   };
 }
 
@@ -265,9 +328,15 @@ function rowToRedeemInventory(row) {
     type_id: row.type_id,
     type_name: row.type_name || "",
     type_slug: row.type_slug || "",
-    field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
-    mail_protocols: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol]),
-    mail_protocol: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol])[0],
+    field_schema: row.field_schema
+      ? parseRedeemFieldSchema(row.field_schema)
+      : undefined,
+    mail_protocols: normalizeMailProtocols(row.pickup_protocols, [
+      row.mail_protocol,
+    ]),
+    mail_protocol: normalizeMailProtocols(row.pickup_protocols, [
+      row.mail_protocol,
+    ])[0],
     import_delimiter: row.import_delimiter || "----",
     payload: parseJson(row.payload_json, {}),
     serialized_value: row.serialized_value || "",
@@ -276,12 +345,14 @@ function rowToRedeemInventory(row) {
     redeemed_code_id: row.redeemed_code_id ?? null,
     redeemed_at: row.redeemed_at || null,
     created_at: row.created_at || "",
-    updated_at: row.updated_at || ""
+    updated_at: row.updated_at || "",
   };
 }
 
 function normalizeLookupValue(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
 function extractMailboxCredentials(payload = {}) {
@@ -293,10 +364,10 @@ function extractMailboxCredentials(payload = {}) {
   }
 
   const email = String(
-    payload.account || payload.email || payload.mail || payload.username || ""
+    payload.account || payload.email || payload.mail || payload.username || "",
   ).trim();
   const refreshToken = String(
-    payload.refreshtoken || payload.refresh_token || ""
+    payload.refreshtoken || payload.refresh_token || "",
   ).trim();
 
   if (!email || !refreshToken) {
@@ -306,8 +377,10 @@ function extractMailboxCredentials(payload = {}) {
   return {
     email,
     password: String(payload.password || "").trim(),
-    client_id: String(payload.oauth2id || payload.client_id || CLIENT_ID).trim() || CLIENT_ID,
-    refresh_token: refreshToken
+    client_id:
+      String(payload.oauth2id || payload.client_id || CLIENT_ID).trim() ||
+      CLIENT_ID,
+    refresh_token: refreshToken,
   };
 }
 
@@ -333,9 +406,9 @@ function normalizeCodeStatusFilter(status) {
     return {
       conditions: [
         "codes.status = 'unused'",
-        "(codes.expires_at IS NULL OR codes.expires_at > CURRENT_TIMESTAMP)"
+        "(codes.expires_at IS NULL OR codes.expires_at > CURRENT_TIMESTAMP)",
       ],
-      params: []
+      params: [],
     };
   }
 
@@ -344,22 +417,26 @@ function normalizeCodeStatusFilter(status) {
       conditions: [
         "codes.status = 'unused'",
         "codes.expires_at IS NOT NULL",
-        "codes.expires_at <= CURRENT_TIMESTAMP"
+        "codes.expires_at <= CURRENT_TIMESTAMP",
       ],
-      params: []
+      params: [],
     };
   }
 
-  if (nextStatus === "unused" || nextStatus === "redeemed" || nextStatus === "disabled") {
+  if (
+    nextStatus === "unused" ||
+    nextStatus === "redeemed" ||
+    nextStatus === "disabled"
+  ) {
     return {
       conditions: ["codes.status = ?"],
-      params: [nextStatus]
+      params: [nextStatus],
     };
   }
 
   return {
     conditions: [],
-    params: []
+    params: [],
   };
 }
 
@@ -368,7 +445,7 @@ function buildRedeemCodesWhere({
   status = "",
   q = "",
   min_quantity = "",
-  max_quantity = ""
+  max_quantity = "",
 } = {}) {
   const conditions = [];
   const params = [];
@@ -401,7 +478,7 @@ function buildRedeemCodesWhere({
 
   return {
     where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "",
-    params
+    params,
   };
 }
 
@@ -429,8 +506,10 @@ function rowToRedeemCode(row) {
     expires_at: row.expires_at || null,
     redeemed_inventory_id: row.redeemed_inventory_id ?? null,
     redeemed_at: row.redeemed_at || null,
+    data_deleted_at: row.data_deleted_at || null,
+    data_deleted_reason: row.data_deleted_reason || "",
     created_at: row.created_at || "",
-    updated_at: row.updated_at || ""
+    updated_at: row.updated_at || "",
   };
 }
 
@@ -448,14 +527,20 @@ function rowToRedeemRecord(row) {
     normalized_code: row.normalized_code,
     type_name: row.type_name || "",
     type_slug: row.type_slug || "",
-    field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
-    mail_protocols: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol]),
-    mail_protocol: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol])[0],
+    field_schema: row.field_schema
+      ? parseRedeemFieldSchema(row.field_schema)
+      : undefined,
+    mail_protocols: normalizeMailProtocols(row.pickup_protocols, [
+      row.mail_protocol,
+    ]),
+    mail_protocol: normalizeMailProtocols(row.pickup_protocols, [
+      row.mail_protocol,
+    ])[0],
     import_delimiter: row.import_delimiter || "----",
     payload: parseJson(row.payload_json, {}),
     requester_ip: row.requester_ip || "",
     requester_user_agent: row.requester_user_agent || "",
-    redeemed_at: row.redeemed_at || ""
+    redeemed_at: row.redeemed_at || "",
   };
 }
 
@@ -475,7 +560,7 @@ function rowToRedeemRecordGroup(row) {
     item_count: Number(row.item_count || 0),
     redeemed_at: row.redeemed_at || "",
     requester_ip: row.requester_ip || "",
-    requester_user_agent: row.requester_user_agent || ""
+    requester_user_agent: row.requester_user_agent || "",
   };
 }
 
@@ -497,7 +582,7 @@ function rowToRedeemTypeFromCode(row) {
     available_code_count: 0,
     redeemed_count: 0,
     created_at: "",
-    updated_at: ""
+    updated_at: "",
   });
 }
 
@@ -517,7 +602,7 @@ function recordToRedeemInventory(record, codeId) {
     redeemed_code_id: codeId,
     redeemed_at: record.redeemed_at,
     created_at: "",
-    updated_at: ""
+    updated_at: "",
   };
 }
 
@@ -533,12 +618,18 @@ function buildExistingRedeemResult(codeRow) {
       code: rowToRedeemCode({
         ...codeRow,
         status: "redeemed",
-        redeemed_quantity: Math.max(Number(codeRow.redeemed_quantity || 0), records.length),
-        redeemed_inventory_id: codeRow.redeemed_inventory_id ?? records[0].inventory_id,
-        redeemed_at: redeemedAt
+        redeemed_quantity: Math.max(
+          Number(codeRow.redeemed_quantity || 0),
+          records.length,
+        ),
+        redeemed_inventory_id:
+          codeRow.redeemed_inventory_id ?? records[0].inventory_id,
+        redeemed_at: redeemedAt,
       }),
-      inventories: records.map((record) => recordToRedeemInventory(record, codeRow.id)),
-      type: rowToRedeemTypeFromCode(codeRow)
+      inventories: records.map((record) =>
+        recordToRedeemInventory(record, codeRow.id),
+      ),
+      type: rowToRedeemTypeFromCode(codeRow),
     };
   }
 
@@ -558,9 +649,13 @@ function buildExistingRedeemResult(codeRow) {
           inventory.redeemed_code_id = ?
           OR (? IS NOT NULL AND inventory.id = ?)
         ORDER BY inventory.id ASC
-      `
+      `,
     )
-    .all(codeRow.id, codeRow.redeemed_inventory_id, codeRow.redeemed_inventory_id)
+    .all(
+      codeRow.id,
+      codeRow.redeemed_inventory_id,
+      codeRow.redeemed_inventory_id,
+    )
     .map(rowToRedeemInventory);
 
   if (!inventoryRows.length) {
@@ -574,18 +669,24 @@ function buildExistingRedeemResult(codeRow) {
     code: rowToRedeemCode({
       ...codeRow,
       status: "redeemed",
-      redeemed_quantity: Math.max(Number(codeRow.redeemed_quantity || 0), inventoryRows.length),
-      redeemed_inventory_id: codeRow.redeemed_inventory_id ?? inventoryRows[0].id,
-      redeemed_at: codeRow.redeemed_at || inventoryRows[0].redeemed_at
+      redeemed_quantity: Math.max(
+        Number(codeRow.redeemed_quantity || 0),
+        inventoryRows.length,
+      ),
+      redeemed_inventory_id:
+        codeRow.redeemed_inventory_id ?? inventoryRows[0].id,
+      redeemed_at: codeRow.redeemed_at || inventoryRows[0].redeemed_at,
     }),
     inventories: inventoryRows,
-    type: rowToRedeemTypeFromCode(codeRow)
+    type: rowToRedeemTypeFromCode(codeRow),
   };
 }
 
 export function getAccount(email) {
   const row = db
-    .prepare("SELECT email, password, client_id, refresh_token FROM accounts WHERE email = ?")
+    .prepare(
+      "SELECT email, password, client_id, refresh_token FROM accounts WHERE email = ?",
+    )
     .get(email);
   return row ? { email: row.email, ...rowToAccount(row) } : null;
 }
@@ -612,7 +713,7 @@ export function getMailboxAccountFromInventory(email) {
           CASE inventory.status WHEN 'available' THEN 0 ELSE 1 END,
           inventory.updated_at DESC,
           inventory.id DESC
-      `
+      `,
     )
     .all();
 
@@ -635,11 +736,17 @@ export function getMailboxAccountFromInventory(email) {
       type_id: row.type_id,
       type_slug: row.type_slug,
       type_name: row.type_name,
-      mail_protocols: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol]),
-      mail_protocol: normalizeMailProtocols(row.pickup_protocols, [row.mail_protocol])[0],
+      mail_protocols: normalizeMailProtocols(row.pickup_protocols, [
+        row.mail_protocol,
+      ]),
+      mail_protocol: normalizeMailProtocols(row.pickup_protocols, [
+        row.mail_protocol,
+      ])[0],
       payload: payload,
-      field_schema: row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined,
-      import_delimiter: row.import_delimiter || "----"
+      field_schema: row.field_schema
+        ? parseRedeemFieldSchema(row.field_schema)
+        : undefined,
+      import_delimiter: row.import_delimiter || "----",
     };
   }
 
@@ -659,7 +766,7 @@ export function updateRedeemInventoryPayload(inventoryId, payload) {
         JOIN redeem_email_types types ON types.id = inventory.type_id
         WHERE inventory.id = ?
         LIMIT 1
-      `
+      `,
     )
     .get(Number(inventoryId));
 
@@ -667,10 +774,17 @@ export function updateRedeemInventoryPayload(inventoryId, payload) {
     return false;
   }
 
-  const fieldSchema = row.field_schema ? parseRedeemFieldSchema(row.field_schema) : undefined;
+  const fieldSchema = row.field_schema
+    ? parseRedeemFieldSchema(row.field_schema)
+    : undefined;
   const delimiter = row.import_delimiter || "----";
-  const serializedValue = serializeInventoryPayload(fieldSchema, payload, delimiter);
-  const searchText = payloadToSearchText(payload) || serializedValue.toLowerCase();
+  const serializedValue = serializeInventoryPayload(
+    fieldSchema,
+    payload,
+    delimiter,
+  );
+  const searchText =
+    payloadToSearchText(payload) || serializedValue.toLowerCase();
 
   const result = db
     .prepare(
@@ -682,14 +796,55 @@ export function updateRedeemInventoryPayload(inventoryId, payload) {
           search_text = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `
+      `,
     )
-    .run(JSON.stringify(payload), serializedValue, searchText, Number(inventoryId));
+    .run(
+      JSON.stringify(payload),
+      serializedValue,
+      searchText,
+      Number(inventoryId),
+    );
 
   return result.changes > 0;
 }
 
-export function upsertAccount({ email, password = "", client_id = "", refresh_token }) {
+export function updateRedeemInventoryRefreshToken(inventoryId, refreshToken) {
+  const row = db
+    .prepare("SELECT payload_json FROM redeem_inventory WHERE id = ? LIMIT 1")
+    .get(Number(inventoryId));
+  const nextRefreshToken = String(refreshToken || "").trim();
+  if (!row || !nextRefreshToken) {
+    return false;
+  }
+
+  const payload = parseJson(row.payload_json, {});
+  const credentials = extractMailboxCredentials(payload);
+  if (!credentials || credentials.refresh_token === nextRefreshToken) {
+    return false;
+  }
+
+  if (payload.raw_line) {
+    payload.raw_line = [
+      credentials.email,
+      credentials.password || "",
+      credentials.client_id || CLIENT_ID,
+      nextRefreshToken,
+    ].join("----");
+  } else if (Object.prototype.hasOwnProperty.call(payload, "refreshtoken")) {
+    payload.refreshtoken = nextRefreshToken;
+  } else {
+    payload.refresh_token = nextRefreshToken;
+  }
+
+  return updateRedeemInventoryPayload(inventoryId, payload);
+}
+
+export function upsertAccount({
+  email,
+  password = "",
+  client_id = "",
+  refresh_token,
+}) {
   const stmt = db.prepare(`
     INSERT INTO accounts (email, password, client_id, refresh_token, updated_at)
     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -707,18 +862,20 @@ export function getSystemConfig() {
     .prepare("SELECT value FROM system_config WHERE key = 'email_limit'")
     .get();
   return {
-    email_limit: value ? Number(value.value) : DEFAULT_EMAIL_LIMIT
+    email_limit: value ? Number(value.value) : DEFAULT_EMAIL_LIMIT,
   };
 }
 
 export function getSystemConfigValue(key) {
-  const row = db.prepare("SELECT value FROM system_config WHERE key = ?").get(String(key || ""));
+  const row = db
+    .prepare("SELECT value FROM system_config WHERE key = ?")
+    .get(String(key || ""));
   return row ? row.value : null;
 }
 
 export function setSystemConfigValue(key, value) {
   db.prepare(
-    "INSERT INTO system_config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP"
+    "INSERT INTO system_config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
   ).run(key, String(value));
   return true;
 }
@@ -762,7 +919,7 @@ export function createRedeemEmailType(type) {
           updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `
+      `,
     )
     .run(
       type.slug,
@@ -770,9 +927,11 @@ export function createRedeemEmailType(type) {
       type.description || "",
       JSON.stringify(type.field_schema),
       normalizeMailProtocols(type.mail_protocols, [type.mail_protocol])[0],
-      JSON.stringify(normalizeMailProtocols(type.mail_protocols, [type.mail_protocol])),
+      JSON.stringify(
+        normalizeMailProtocols(type.mail_protocols, [type.mail_protocol]),
+      ),
       type.import_delimiter || "----",
-      type.is_active ? 1 : 0
+      type.is_active ? 1 : 0,
     );
 
   return getRedeemEmailTypeById(result.lastInsertRowid);
@@ -794,7 +953,7 @@ export function updateRedeemEmailType(typeId, type) {
           is_active = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `
+      `,
     )
     .run(
       type.slug,
@@ -802,10 +961,12 @@ export function updateRedeemEmailType(typeId, type) {
       type.description || "",
       JSON.stringify(type.field_schema),
       normalizeMailProtocols(type.mail_protocols, [type.mail_protocol])[0],
-      JSON.stringify(normalizeMailProtocols(type.mail_protocols, [type.mail_protocol])),
+      JSON.stringify(
+        normalizeMailProtocols(type.mail_protocols, [type.mail_protocol]),
+      ),
       type.import_delimiter || "----",
       type.is_active ? 1 : 0,
-      Number(typeId)
+      Number(typeId),
     );
 
   return result.changes > 0 ? getRedeemEmailTypeById(typeId) : null;
@@ -847,7 +1008,7 @@ export function deleteRedeemEmailType(typeId) {
       deleted_type_count: deletedTypeCount,
       deleted_inventory_count: deletedInventoryCount,
       deleted_code_count: deletedCodeCount,
-      deleted_record_count: deletedRecordCount
+      deleted_record_count: deletedRecordCount,
     };
   });
 
@@ -873,7 +1034,7 @@ export function getRedeemAdminOverview() {
           SUM(CASE WHEN status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable_inventory_count,
           SUM(CASE WHEN status = 'redeemed' THEN 1 ELSE 0 END) AS redeemed_inventory_count
         FROM redeem_inventory
-      `
+      `,
     )
     .get();
   const codes = db
@@ -885,7 +1046,7 @@ export function getRedeemAdminOverview() {
           SUM(CASE WHEN status = 'redeemed' THEN 1 ELSE 0 END) AS redeemed_code_count,
           SUM(CASE WHEN status = 'disabled' THEN 1 ELSE 0 END) AS disabled_code_count
         FROM redeem_codes
-      `
+      `,
     )
     .get();
   const typeCount = db
@@ -898,14 +1059,18 @@ export function getRedeemAdminOverview() {
   return {
     type_count: Number(typeCount?.type_count || 0),
     total_inventory_count: Number(inventory?.total_inventory_count || 0),
-    available_inventory_count: Number(inventory?.available_inventory_count || 0),
-    unavailable_inventory_count: Number(inventory?.unavailable_inventory_count || 0),
+    available_inventory_count: Number(
+      inventory?.available_inventory_count || 0,
+    ),
+    unavailable_inventory_count: Number(
+      inventory?.unavailable_inventory_count || 0,
+    ),
     redeemed_inventory_count: Number(inventory?.redeemed_inventory_count || 0),
     total_code_count: Number(codes?.total_code_count || 0),
     unused_code_count: Number(codes?.unused_code_count || 0),
     redeemed_code_count: Number(codes?.redeemed_code_count || 0),
     disabled_code_count: Number(codes?.disabled_code_count || 0),
-    record_count: Number(recordCount?.record_count || 0)
+    record_count: Number(recordCount?.record_count || 0),
   };
 }
 
@@ -914,7 +1079,7 @@ export function getRedeemInventoryPaged({
   status = "",
   q = "",
   page = 1,
-  page_size = 10
+  page_size = 10,
 } = {}) {
   const safePage = clampPositiveInt(page, 1);
   const safePageSize = clampPositiveInt(page_size, 10, 100);
@@ -926,7 +1091,11 @@ export function getRedeemInventoryPaged({
     params.push(Number(type_id));
   }
 
-  if (status === "available" || status === "unavailable" || status === "redeemed") {
+  if (
+    status === "available" ||
+    status === "unavailable" ||
+    status === "redeemed"
+  ) {
     conditions.push("inventory.status = ?");
     params.push(status);
   }
@@ -943,7 +1112,7 @@ export function getRedeemInventoryPaged({
         SELECT COUNT(*) AS total
         FROM redeem_inventory inventory
         ${where}
-      `
+      `,
     )
     .get(...params);
 
@@ -962,7 +1131,7 @@ export function getRedeemInventoryPaged({
         ${where}
         ORDER BY inventory.id DESC
         LIMIT ? OFFSET ?
-      `
+      `,
     )
     .all(...params, safePageSize, Math.max(0, (safePage - 1) * safePageSize));
 
@@ -970,20 +1139,32 @@ export function getRedeemInventoryPaged({
     items: rows.map(rowToRedeemInventory),
     total: Number(totalRow?.total || 0),
     page: safePage,
-    page_size: safePageSize
+    page_size: safePageSize,
   };
 }
 
-export function importRedeemInventory({ type_id, items = [], mode = "append", mail_protocols = [] }) {
+export function importRedeemInventory({
+  type_id,
+  items = [],
+  mode = "append",
+  mail_protocols = [],
+}) {
   const type = getRedeemEmailTypeById(type_id);
   if (!type) {
     throw new Error("兑换类型不存在");
   }
 
-  const normalizedMode = mode === "replace_available" ? "replace_available" : "append";
-  const allowedProtocols = normalizeMailProtocols(type.mail_protocols, [type.mail_protocol]);
-  const pickupProtocols = normalizeMailProtocols(mail_protocols, [type.mail_protocol]);
-  if (pickupProtocols.some((protocol) => !allowedProtocols.includes(protocol))) {
+  const normalizedMode =
+    mode === "replace_available" ? "replace_available" : "append";
+  const allowedProtocols = normalizeMailProtocols(type.mail_protocols, [
+    type.mail_protocol,
+  ]);
+  const pickupProtocols = normalizeMailProtocols(mail_protocols, [
+    type.mail_protocol,
+  ]);
+  if (
+    pickupProtocols.some((protocol) => !allowedProtocols.includes(protocol))
+  ) {
     throw new Error("导入协议不在该兑换类型允许的协议范围内");
   }
   const tx = db.transaction((targetType, nextItems, nextMode) => {
@@ -993,7 +1174,9 @@ export function importRedeemInventory({ type_id, items = [], mode = "append", ma
 
     if (nextMode === "replace_available") {
       cleared = db
-        .prepare("DELETE FROM redeem_inventory WHERE type_id = ? AND status = 'available'")
+        .prepare(
+          "DELETE FROM redeem_inventory WHERE type_id = ? AND status = 'available'",
+        )
         .run(targetType.id).changes;
     }
 
@@ -1010,10 +1193,14 @@ export function importRedeemInventory({ type_id, items = [], mode = "append", ma
           updated_at
         )
         VALUES (?, ?, ?, ?, ?, 'available', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `
+      `,
     );
-    const existingStmt = db.prepare("SELECT id, pickup_protocols FROM redeem_inventory WHERE type_id = ? AND serialized_value = ? LIMIT 1");
-    const mergeProtocolsStmt = db.prepare("UPDATE redeem_inventory SET pickup_protocols = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+    const existingStmt = db.prepare(
+      "SELECT id, pickup_protocols FROM redeem_inventory WHERE type_id = ? AND serialized_value = ? LIMIT 1",
+    );
+    const mergeProtocolsStmt = db.prepare(
+      "UPDATE redeem_inventory SET pickup_protocols = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    );
 
     for (const item of nextItems) {
       const payload = item.payload || {};
@@ -1022,7 +1209,7 @@ export function importRedeemInventory({ type_id, items = [], mode = "append", ma
         serializeInventoryPayload(
           targetType.field_schema,
           payload,
-          targetType.import_delimiter
+          targetType.import_delimiter,
         );
       const searchText = item.search_text || payloadToSearchText(payload);
       const result = insertStmt.run(
@@ -1030,7 +1217,7 @@ export function importRedeemInventory({ type_id, items = [], mode = "append", ma
         JSON.stringify(payload),
         serializedValue,
         searchText,
-        JSON.stringify(pickupProtocols)
+        JSON.stringify(pickupProtocols),
       );
 
       if (result.changes > 0) {
@@ -1038,10 +1225,13 @@ export function importRedeemInventory({ type_id, items = [], mode = "append", ma
       } else {
         const existing = existingStmt.get(targetType.id, serializedValue);
         if (existing) {
-          const merged = normalizeMailProtocols([
-            ...normalizeMailProtocols(existing.pickup_protocols, []),
-            ...pickupProtocols
-          ], pickupProtocols);
+          const merged = normalizeMailProtocols(
+            [
+              ...normalizeMailProtocols(existing.pickup_protocols, []),
+              ...pickupProtocols,
+            ],
+            pickupProtocols,
+          );
           mergeProtocolsStmt.run(JSON.stringify(merged), existing.id);
         }
         skipped += 1;
@@ -1053,7 +1243,7 @@ export function importRedeemInventory({ type_id, items = [], mode = "append", ma
       cleared_count: cleared,
       added_count: added,
       skipped_count: skipped,
-      total_count: nextItems.length
+      total_count: nextItems.length,
     };
   });
 
@@ -1076,7 +1266,7 @@ export function updateRedeemInventoryStatus(inventoryId, status) {
         JOIN redeem_email_types types ON types.id = inventory.type_id
         WHERE inventory.id = ?
         LIMIT 1
-      `
+      `,
     )
     .get(Number(inventoryId));
 
@@ -1090,25 +1280,30 @@ export function updateRedeemInventoryStatus(inventoryId, status) {
 
   if (row.status !== nextStatus) {
     db.prepare(
-      "UPDATE redeem_inventory SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+      "UPDATE redeem_inventory SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
     ).run(nextStatus, Number(inventoryId));
   }
 
   return rowToRedeemInventory({ ...row, status: nextStatus });
 }
 
-export function updateRedeemInventoryBatch(ids, { type_id = null, status = null } = {}) {
+export function updateRedeemInventoryBatch(
+  ids,
+  { type_id = null, status = null } = {},
+) {
   const targets = [
     ...new Set(
       (ids || [])
         .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0)
-    )
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
   ];
   const nextStatus =
     status === "available" || status === "unavailable" ? status : null;
   const nextTypeId =
-    Number.isInteger(Number(type_id)) && Number(type_id) > 0 ? Number(type_id) : null;
+    Number.isInteger(Number(type_id)) && Number(type_id) > 0
+      ? Number(type_id)
+      : null;
 
   if (!nextStatus && !nextTypeId) {
     throw new Error("请至少指定一个库存修改项");
@@ -1135,7 +1330,7 @@ export function updateRedeemInventoryBatch(ids, { type_id = null, status = null 
         JOIN redeem_email_types types ON types.id = inventory.type_id
         WHERE inventory.id = ?
         LIMIT 1
-      `
+      `,
     );
     const duplicateStmt = db.prepare(
       `
@@ -1143,7 +1338,7 @@ export function updateRedeemInventoryBatch(ids, { type_id = null, status = null 
         FROM redeem_inventory
         WHERE type_id = ? AND serialized_value = ? AND id != ?
         LIMIT 1
-      `
+      `,
     );
     const updateStmt = db.prepare(
       `
@@ -1155,7 +1350,7 @@ export function updateRedeemInventoryBatch(ids, { type_id = null, status = null 
           status = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `
+      `,
     );
 
     for (const id of items) {
@@ -1176,10 +1371,13 @@ export function updateRedeemInventoryBatch(ids, { type_id = null, status = null 
       const finalSerializedValue = serializeInventoryPayload(
         finalFieldSchema,
         payload,
-        finalDelimiter
+        finalDelimiter,
       );
       const finalSearchText =
-        payloadToSearchText(payload) || String(finalSerializedValue || "").trim().toLowerCase();
+        payloadToSearchText(payload) ||
+        String(finalSerializedValue || "")
+          .trim()
+          .toLowerCase();
       const finalStatus = targetStatus || row.status;
 
       if (
@@ -1202,7 +1400,7 @@ export function updateRedeemInventoryBatch(ids, { type_id = null, status = null 
         finalSerializedValue,
         finalSearchText,
         finalStatus,
-        id
+        id,
       ).changes;
     }
 
@@ -1211,7 +1409,7 @@ export function updateRedeemInventoryBatch(ids, { type_id = null, status = null 
       skipped_count: skippedCount,
       total_count: items.length,
       status: targetStatus,
-      type_id: targetType ? targetType.id : null
+      type_id: targetType ? targetType.id : null,
     };
   });
 
@@ -1226,7 +1424,13 @@ export function deleteRedeemInventory(inventoryId) {
 }
 
 export function deleteRedeemInventoryBatch(ids) {
-  const targets = [...new Set((ids || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const targets = [
+    ...new Set(
+      (ids || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
   const tx = db.transaction((items) => {
     let deleted = 0;
     const stmt = db.prepare("DELETE FROM redeem_inventory WHERE id = ?");
@@ -1247,7 +1451,11 @@ export function getRedeemInventoryIdsForCheck({ type_id, status = "" } = {}) {
     params.push(Number(type_id));
   }
 
-  if (status === "available" || status === "unavailable" || status === "redeemed") {
+  if (
+    status === "available" ||
+    status === "unavailable" ||
+    status === "redeemed"
+  ) {
     conditions.push("status = ?");
     params.push(status);
   }
@@ -1268,7 +1476,11 @@ export function getMailboxInventoryAccounts({ type_id, status = "" } = {}) {
     params.push(Number(type_id));
   }
 
-  if (status === "available" || status === "unavailable" || status === "redeemed") {
+  if (
+    status === "available" ||
+    status === "unavailable" ||
+    status === "redeemed"
+  ) {
     conditions.push("inventory.status = ?");
     params.push(status);
   }
@@ -1288,7 +1500,7 @@ export function getMailboxInventoryAccounts({ type_id, status = "" } = {}) {
         JOIN redeem_email_types types ON types.id = inventory.type_id
         ${where}
         ORDER BY inventory.id ASC
-      `
+      `,
     )
     .all(...params);
 
@@ -1316,15 +1528,250 @@ export function getMailboxInventoryAccounts({ type_id, status = "" } = {}) {
       status: item.status,
       source: "redeem_inventory",
       payload: item.payload,
-      ...credentials
+      ...credentials,
     });
   }
 
   return accounts;
 }
 
+export function getTokenCheckCandidates({ type_id, status } = {}) {
+  const safeTypeId = Number(type_id);
+  const safeStatus = String(status || "").trim();
+  if (!Number.isInteger(safeTypeId) || safeTypeId < 1) {
+    throw new Error("请选择检测分类");
+  }
+  if (!["available", "unavailable", "redeemed"].includes(safeStatus)) {
+    throw new Error("请选择账号可用状态");
+  }
+
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          inventory.*,
+          types.name AS type_name,
+          types.slug AS type_slug,
+          types.field_schema,
+          types.mail_protocol,
+          types.import_delimiter
+        FROM redeem_inventory inventory
+        JOIN redeem_email_types types ON types.id = inventory.type_id
+        WHERE inventory.type_id = ? AND inventory.status = ?
+        ORDER BY inventory.id ASC
+      `,
+    )
+    .all(safeTypeId, safeStatus);
+
+  return rows.map((row) => {
+    const item = rowToRedeemInventory(row);
+    return {
+      inventory_id: item.id,
+      type_id: item.type_id,
+      type_name: item.type_name,
+      status: item.status,
+      protocol: item.mail_protocol,
+      serialized_value: item.serialized_value,
+      credentials: extractMailboxCredentials(item.payload || {}),
+    };
+  });
+}
+
+export function isRedeemAccessExpired(redeemedAt, now = Date.now()) {
+  const rawRedeemedAt = String(redeemedAt || "").trim();
+  const normalizedRedeemedAt = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
+    rawRedeemedAt,
+  )
+    ? `${rawRedeemedAt.replace(" ", "T")}Z`
+    : rawRedeemedAt;
+  const redeemedTimestamp = Date.parse(normalizedRedeemedAt);
+  if (!Number.isFinite(redeemedTimestamp)) {
+    return false;
+  }
+
+  return redeemedTimestamp + REDEEM_ACCESS_TTL_MS <= Number(now);
+}
+
+export function purgeExpiredRedeemDataByCodeId(codeId, now = Date.now()) {
+  const targetId = Number(codeId);
+  const tx = db.transaction((id, currentTime) => {
+    const code = db
+      .prepare(
+        "SELECT id, code, status, redeemed_at, data_deleted_at FROM redeem_codes WHERE id = ? LIMIT 1",
+      )
+      .get(id);
+    if (
+      !code ||
+      code.status !== "redeemed" ||
+      !isRedeemAccessExpired(code.redeemed_at, currentTime)
+    ) {
+      return null;
+    }
+
+    if (code.data_deleted_at) {
+      return {
+        code_id: id,
+        code: code.code,
+        deleted_inventory_count: 0,
+        deleted_record_count: 0,
+        already_deleted: true,
+      };
+    }
+
+    const inventoryIds = db
+      .prepare(
+        `
+          SELECT inventory_id AS id FROM redeem_records WHERE code_id = ?
+          UNION
+          SELECT id FROM redeem_inventory WHERE redeemed_code_id = ?
+        `,
+      )
+      .all(id, id)
+      .map((row) => Number(row.id));
+    const scrubTokenCheckResult = db.prepare(
+      `
+        UPDATE token_check_results
+        SET email = '', serialized_value = ''
+        WHERE inventory_id = ?
+      `,
+    );
+    for (const inventoryId of inventoryIds) {
+      scrubTokenCheckResult.run(inventoryId);
+    }
+    const deletedRecordCount = db
+      .prepare("DELETE FROM redeem_records WHERE code_id = ?")
+      .run(id).changes;
+    let deletedInventoryCount = db
+      .prepare("DELETE FROM redeem_inventory WHERE redeemed_code_id = ?")
+      .run(id).changes;
+
+    const remainingIds = inventoryIds.filter((inventoryId) =>
+      db
+        .prepare("SELECT 1 FROM redeem_inventory WHERE id = ? LIMIT 1")
+        .get(inventoryId),
+    );
+    const deleteInventory = db.prepare(
+      "DELETE FROM redeem_inventory WHERE id = ?",
+    );
+    for (const inventoryId of remainingIds) {
+      deletedInventoryCount += deleteInventory.run(inventoryId).changes;
+    }
+
+    db.prepare(
+      `
+        UPDATE redeem_codes
+        SET
+          redeemed_inventory_id = NULL,
+          redeemed_quantity = 0,
+          data_deleted_at = CURRENT_TIMESTAMP,
+          data_deleted_reason = 'expired_24h',
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+    ).run(id);
+
+    return {
+      code_id: id,
+      code: code.code,
+      deleted_inventory_count: deletedInventoryCount,
+      deleted_record_count: deletedRecordCount,
+      already_deleted: false,
+    };
+  });
+
+  return tx(targetId, now);
+}
+
+export function purgeExpiredRedeemData(now = Date.now()) {
+  const rows = db
+    .prepare(
+      `
+        SELECT id
+        FROM redeem_codes
+        WHERE status = 'redeemed' AND redeemed_at IS NOT NULL AND data_deleted_at IS NULL
+      `,
+    )
+    .all();
+  const results = [];
+  for (const row of rows) {
+    const result = purgeExpiredRedeemDataByCodeId(row.id, now);
+    if (result) {
+      results.push(result);
+    }
+  }
+  return results;
+}
+
+export function rollbackRedeemCode(codeId) {
+  const targetId = Number(codeId);
+  const tx = db.transaction((id) => {
+    const code = db
+      .prepare("SELECT * FROM redeem_codes WHERE id = ? LIMIT 1")
+      .get(id);
+    if (!code) {
+      return null;
+    }
+    if (code.status !== "redeemed") {
+      throw new Error("只有已兑换的卡密可以回退");
+    }
+
+    const inventoryIds = db
+      .prepare("SELECT inventory_id FROM redeem_records WHERE code_id = ?")
+      .all(id)
+      .map((row) => Number(row.inventory_id));
+    const restoredByCode = db
+      .prepare(
+        `
+          UPDATE redeem_inventory
+          SET
+            status = 'available',
+            redeemed_code_id = NULL,
+            redeemed_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE redeemed_code_id = ?
+        `,
+      )
+      .run(id).changes;
+    let restoredByRecord = 0;
+    const restoreInventory = db.prepare(
+      `
+        UPDATE redeem_inventory
+        SET
+          status = 'available',
+          redeemed_code_id = NULL,
+          redeemed_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'redeemed'
+      `,
+    );
+    for (const inventoryId of inventoryIds) {
+      restoredByRecord += restoreInventory.run(inventoryId).changes;
+    }
+
+    const deletedRecordCount = db
+      .prepare("DELETE FROM redeem_records WHERE code_id = ?")
+      .run(id).changes;
+    db.prepare("DELETE FROM redeem_codes WHERE id = ?").run(id);
+
+    return {
+      code_id: id,
+      code: code.code,
+      restored_inventory_count: restoredByCode + restoredByRecord,
+      deleted_record_count: deletedRecordCount,
+    };
+  });
+
+  return tx(targetId);
+}
+
 export function getRedeemInventoryByIds(ids) {
-  const targets = [...new Set((ids || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const targets = [
+    ...new Set(
+      (ids || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
   if (!targets.length) {
     return [];
   }
@@ -1344,7 +1791,7 @@ export function getRedeemInventoryByIds(ids) {
         JOIN redeem_email_types types ON types.id = inventory.type_id
         WHERE inventory.id IN (${placeholders})
         ORDER BY inventory.id ASC
-      `
+      `,
     )
     .all(...targets);
 
@@ -1358,7 +1805,7 @@ export function getRedeemCodesPaged({
   min_quantity = "",
   max_quantity = "",
   page = 1,
-  page_size = 10
+  page_size = 10,
 } = {}) {
   const safePage = clampPositiveInt(page, 1);
   const safePageSize = clampPositiveInt(page_size, 10, 100);
@@ -1367,7 +1814,7 @@ export function getRedeemCodesPaged({
     status,
     q,
     min_quantity,
-    max_quantity
+    max_quantity,
   });
   const totalRow = db
     .prepare(
@@ -1375,7 +1822,7 @@ export function getRedeemCodesPaged({
         SELECT COUNT(*) AS total
         FROM redeem_codes codes
         ${where}
-      `
+      `,
     )
     .get(...params);
 
@@ -1391,7 +1838,7 @@ export function getRedeemCodesPaged({
         ${where}
         ORDER BY codes.id DESC
         LIMIT ? OFFSET ?
-      `
+      `,
     )
     .all(...params, safePageSize, Math.max(0, (safePage - 1) * safePageSize));
 
@@ -1399,12 +1846,18 @@ export function getRedeemCodesPaged({
     items: rows.map(rowToRedeemCode),
     total: Number(totalRow?.total || 0),
     page: safePage,
-    page_size: safePageSize
+    page_size: safePageSize,
   };
 }
 
 export function getRedeemCodesByIds(ids) {
-  const targets = [...new Set((ids || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const targets = [
+    ...new Set(
+      (ids || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
   if (!targets.length) {
     return [];
   }
@@ -1421,7 +1874,7 @@ export function getRedeemCodesByIds(ids) {
         JOIN redeem_email_types types ON types.id = codes.type_id
         WHERE codes.id IN (${placeholders})
         ORDER BY codes.id ASC
-      `
+      `,
     )
     .all(...targets);
 
@@ -1433,14 +1886,14 @@ export function getRedeemCodesForExport({
   status = "",
   q = "",
   min_quantity = "",
-  max_quantity = ""
+  max_quantity = "",
 } = {}) {
   const { where, params } = buildRedeemCodesWhere({
     type_id,
     status,
     q,
     min_quantity,
-    max_quantity
+    max_quantity,
   });
   const rows = db
     .prepare(
@@ -1453,7 +1906,7 @@ export function getRedeemCodesForExport({
         JOIN redeem_email_types types ON types.id = codes.type_id
         ${where}
         ORDER BY codes.id DESC
-      `
+      `,
     )
     .all(...params);
 
@@ -1477,7 +1930,7 @@ export function getRedeemCodeByCode(code) {
         JOIN redeem_email_types types ON types.id = codes.type_id
         WHERE codes.normalized_code = ?
         LIMIT 1
-      `
+      `,
     )
     .get(normalizedCode);
 
@@ -1501,14 +1954,17 @@ export function getRedeemRecordsByCodeId(codeId) {
         LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id
         WHERE records.code_id = ?
         ORDER BY records.id ASC
-      `
+      `,
     )
     .all(Number(codeId));
 
   return rows.map(rowToRedeemRecord);
 }
 
-export function getRedeemRecordsByCodeIdPaged(codeId, { page = 1, page_size = 10 } = {}) {
+export function getRedeemRecordsByCodeIdPaged(
+  codeId,
+  { page = 1, page_size = 10 } = {},
+) {
   const safeCodeId = Number(codeId);
   const safePage = clampPositiveInt(page, 1);
   const safePageSize = clampPositiveInt(page_size, 10, 100);
@@ -1518,7 +1974,7 @@ export function getRedeemRecordsByCodeIdPaged(codeId, { page = 1, page_size = 10
         SELECT COUNT(*) AS total
         FROM redeem_records
         WHERE code_id = ?
-      `
+      `,
     )
     .get(safeCodeId);
 
@@ -1539,7 +1995,7 @@ export function getRedeemRecordsByCodeIdPaged(codeId, { page = 1, page_size = 10
         WHERE records.code_id = ?
         ORDER BY records.id ASC
         LIMIT ? OFFSET ?
-      `
+      `,
     )
     .all(safeCodeId, safePageSize, Math.max(0, (safePage - 1) * safePageSize));
 
@@ -1547,7 +2003,7 @@ export function getRedeemRecordsByCodeIdPaged(codeId, { page = 1, page_size = 10
     items: rows.map(rowToRedeemRecord),
     total: Number(totalRow?.total || 0),
     page: safePage,
-    page_size: safePageSize
+    page_size: safePageSize,
   };
 }
 
@@ -1556,7 +2012,7 @@ export function createRedeemCodes({
   count = 1,
   quantity = 1,
   note = "",
-  expires_at = null
+  expires_at = null,
 }) {
   const type = getRedeemEmailTypeById(type_id);
   if (!type) {
@@ -1565,10 +2021,11 @@ export function createRedeemCodes({
 
   const safeCount = clampPositiveInt(count, 1);
   const safeQuantity = clampPositiveInt(quantity, 1);
-  const tx = db.transaction((targetType, amount, nextQuantity, nextNote, nextExpiresAt) => {
-    const created = [];
-    const insertStmt = db.prepare(
-      `
+  const tx = db.transaction(
+    (targetType, amount, nextQuantity, nextNote, nextExpiresAt) => {
+      const created = [];
+      const insertStmt = db.prepare(
+        `
         INSERT INTO redeem_codes (
           code,
           normalized_code,
@@ -1582,68 +2039,69 @@ export function createRedeemCodes({
           updated_at
         )
         VALUES (?, ?, ?, ?, 0, ?, 'unused', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `
-    );
+      `,
+      );
 
-    for (let index = 0; index < amount; index += 1) {
-      let inserted = false;
+      for (let index = 0; index < amount; index += 1) {
+        let inserted = false;
 
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        const code = generateRedeemCode();
-        const normalizedCode = normalizeRedeemCode(code);
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const code = generateRedeemCode();
+          const normalizedCode = normalizeRedeemCode(code);
 
-        try {
-          const result = insertStmt.run(
-            code,
-            normalizedCode,
-            targetType.id,
-            nextQuantity,
-            nextNote,
-            nextExpiresAt
-          );
-          created.push(
-            rowToRedeemCode({
-              id: result.lastInsertRowid,
+          try {
+            const result = insertStmt.run(
               code,
-              normalized_code: normalizedCode,
-              type_id: targetType.id,
-              type_name: targetType.name,
-              type_slug: targetType.slug,
-              quantity: nextQuantity,
-              redeemed_quantity: 0,
-              note: nextNote,
-              status: "unused",
-              expires_at: nextExpiresAt,
-              redeemed_inventory_id: null,
-              redeemed_at: null,
-              created_at: nowTimestamp(),
-              updated_at: nowTimestamp()
-            })
-          );
-          inserted = true;
-          break;
-        } catch (error) {
-          if (String(error.message || "").includes("UNIQUE")) {
-            continue;
+              normalizedCode,
+              targetType.id,
+              nextQuantity,
+              nextNote,
+              nextExpiresAt,
+            );
+            created.push(
+              rowToRedeemCode({
+                id: result.lastInsertRowid,
+                code,
+                normalized_code: normalizedCode,
+                type_id: targetType.id,
+                type_name: targetType.name,
+                type_slug: targetType.slug,
+                quantity: nextQuantity,
+                redeemed_quantity: 0,
+                note: nextNote,
+                status: "unused",
+                expires_at: nextExpiresAt,
+                redeemed_inventory_id: null,
+                redeemed_at: null,
+                created_at: nowTimestamp(),
+                updated_at: nowTimestamp(),
+              }),
+            );
+            inserted = true;
+            break;
+          } catch (error) {
+            if (String(error.message || "").includes("UNIQUE")) {
+              continue;
+            }
+            throw error;
           }
-          throw error;
+        }
+
+        if (!inserted) {
+          throw new Error("生成兑换码冲突过多，请稍后重试");
         }
       }
 
-      if (!inserted) {
-        throw new Error("生成兑换码冲突过多，请稍后重试");
-      }
-    }
-
-    return created;
-  });
+      return created;
+    },
+  );
 
   return tx(
     type,
     safeCount,
     safeQuantity,
     String(note || "").trim(),
-    expires_at || null
+    expires_at || null,
   );
 }
 
@@ -1660,7 +2118,7 @@ export function updateRedeemCodeStatus(codeId, status) {
         JOIN redeem_email_types types ON types.id = codes.type_id
         WHERE codes.id = ?
         LIMIT 1
-      `
+      `,
     )
     .get(Number(codeId));
 
@@ -1673,24 +2131,31 @@ export function updateRedeemCodeStatus(codeId, status) {
   }
 
   db.prepare(
-    "UPDATE redeem_codes SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    "UPDATE redeem_codes SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
   ).run(nextStatus, Number(codeId));
 
   return rowToRedeemCode({ ...row, status: nextStatus });
 }
 
-export function updateRedeemCodeBatch(ids, { type_id = null, quantity = null } = {}) {
+export function updateRedeemCodeBatch(
+  ids,
+  { type_id = null, quantity = null } = {},
+) {
   const targets = [
     ...new Set(
       (ids || [])
         .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0)
-    )
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
   ];
   const nextTypeId =
-    Number.isInteger(Number(type_id)) && Number(type_id) > 0 ? Number(type_id) : null;
+    Number.isInteger(Number(type_id)) && Number(type_id) > 0
+      ? Number(type_id)
+      : null;
   const nextQuantity =
-    Number.isInteger(Number(quantity)) && Number(quantity) > 0 ? Number(quantity) : null;
+    Number.isInteger(Number(quantity)) && Number(quantity) > 0
+      ? Number(quantity)
+      : null;
 
   if (!nextTypeId && !nextQuantity) {
     throw new Error("请至少指定一个卡密修改项");
@@ -1714,7 +2179,7 @@ export function updateRedeemCodeBatch(ids, { type_id = null, quantity = null } =
         JOIN redeem_email_types types ON types.id = codes.type_id
         WHERE codes.id = ?
         LIMIT 1
-      `
+      `,
     );
     const updateStmt = db.prepare(
       `
@@ -1724,7 +2189,7 @@ export function updateRedeemCodeBatch(ids, { type_id = null, quantity = null } =
           quantity = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `
+      `,
     );
 
     for (const id of items) {
@@ -1735,9 +2200,13 @@ export function updateRedeemCodeBatch(ids, { type_id = null, quantity = null } =
       }
 
       const finalTypeId = targetType ? targetType.id : row.type_id;
-      const finalQuantity = targetQuantity || Math.max(1, Number(row.quantity || 1));
+      const finalQuantity =
+        targetQuantity || Math.max(1, Number(row.quantity || 1));
 
-      if (finalTypeId === row.type_id && finalQuantity === Number(row.quantity || 1)) {
+      if (
+        finalTypeId === row.type_id &&
+        finalQuantity === Number(row.quantity || 1)
+      ) {
         skippedCount += 1;
         continue;
       }
@@ -1750,7 +2219,7 @@ export function updateRedeemCodeBatch(ids, { type_id = null, quantity = null } =
       skipped_count: skippedCount,
       total_count: items.length,
       type_id: targetType ? targetType.id : null,
-      quantity: targetQuantity
+      quantity: targetQuantity,
     };
   });
 
@@ -1759,14 +2228,22 @@ export function updateRedeemCodeBatch(ids, { type_id = null, quantity = null } =
 
 export function updateRedeemCodeStatusBatch(ids, status) {
   const nextStatus = status === "disabled" ? "disabled" : "unused";
-  const targets = [...new Set((ids || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const targets = [
+    ...new Set(
+      (ids || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
 
   const tx = db.transaction((items, targetStatus) => {
     let updatedCount = 0;
     let skippedCount = 0;
-    const selectStmt = db.prepare("SELECT id, status FROM redeem_codes WHERE id = ? LIMIT 1");
+    const selectStmt = db.prepare(
+      "SELECT id, status FROM redeem_codes WHERE id = ? LIMIT 1",
+    );
     const updateStmt = db.prepare(
-      "UPDATE redeem_codes SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+      "UPDATE redeem_codes SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
     );
 
     for (const id of items) {
@@ -1783,7 +2260,7 @@ export function updateRedeemCodeStatusBatch(ids, status) {
       updated_count: updatedCount,
       skipped_count: skippedCount,
       total_count: items.length,
-      status: targetStatus
+      status: targetStatus,
     };
   });
 
@@ -1804,7 +2281,9 @@ export function deleteRedeemCode(codeId) {
     throw new Error("已兑换的卡密不能删除");
   }
 
-  const result = db.prepare("DELETE FROM redeem_codes WHERE id = ?").run(targetId);
+  const result = db
+    .prepare("DELETE FROM redeem_codes WHERE id = ?")
+    .run(targetId);
   return result.changes > 0;
 }
 
@@ -1813,14 +2292,14 @@ export function deleteRedeemCodeBatch(ids) {
     ...new Set(
       (ids || [])
         .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0)
-    )
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
   ];
   const tx = db.transaction((items) => {
     let deletedCount = 0;
     let skippedCount = 0;
     const selectStmt = db.prepare(
-      "SELECT id, status FROM redeem_codes WHERE id = ? LIMIT 1"
+      "SELECT id, status FROM redeem_codes WHERE id = ? LIMIT 1",
     );
     const deleteStmt = db.prepare("DELETE FROM redeem_codes WHERE id = ?");
 
@@ -1837,7 +2316,7 @@ export function deleteRedeemCodeBatch(ids) {
     return {
       deleted_count: deletedCount,
       skipped_count: skippedCount,
-      total_count: items.length
+      total_count: items.length,
     };
   });
 
@@ -1847,7 +2326,7 @@ export function deleteRedeemCodeBatch(ids) {
 export function redeemByCode({
   code,
   requester_ip = "",
-  requester_user_agent = ""
+  requester_user_agent = "",
 }) {
   const normalizedCode = normalizeRedeemCode(code);
   if (!normalizedCode) {
@@ -1871,7 +2350,7 @@ export function redeemByCode({
           JOIN redeem_email_types types ON types.id = codes.type_id
           WHERE codes.normalized_code = ?
           LIMIT 1
-        `
+        `,
       )
       .get(targetCode);
 
@@ -1884,6 +2363,14 @@ export function redeemByCode({
     }
 
     if (codeRow.status === "redeemed") {
+      if (
+        codeRow.data_deleted_at ||
+        isRedeemAccessExpired(codeRow.redeemed_at)
+      ) {
+        throw new Error(
+          "兑换已超过24小时，账号信息已删除；取件请手动导入账号数据",
+        );
+      }
       return buildExistingRedeemResult(codeRow);
     }
 
@@ -1892,7 +2379,9 @@ export function redeemByCode({
     }
 
     const quantity = Math.max(1, Number(codeRow.quantity || 1));
-    const allowedProtocols = normalizeMailProtocols(codeRow.mail_protocols, [codeRow.mail_protocol]);
+    const allowedProtocols = normalizeMailProtocols(codeRow.mail_protocols, [
+      codeRow.mail_protocol,
+    ]);
     const protocolCounts = Object.fromEntries(
       allowedProtocols.map((protocol) => {
         const row = db
@@ -1913,25 +2402,25 @@ export function redeemByCode({
                   ) protocols
                   WHERE protocols.value = ?
                 )
-            `
+            `,
           )
           .get(codeRow.type_id, codeRow.mail_protocol, protocol);
         return [protocol, Number(row?.count || 0)];
-      })
+      }),
     );
     const selectedProtocol = allowedProtocols.find(
-      (protocol) => protocolCounts[protocol] >= quantity
+      (protocol) => protocolCounts[protocol] >= quantity,
     );
 
     if (!selectedProtocol) {
       const countSummary = allowedProtocols
         .map(
           (protocol) =>
-            `${protocol === "graph" ? "Graph" : "IMAP"} ${protocolCounts[protocol] || 0} 份`
+            `${protocol === "graph" ? "Graph" : "IMAP"} ${protocolCounts[protocol] || 0} 份`,
         )
         .join("，");
       throw new Error(
-        `当前类型没有单一协议的足够库存，至少需要 ${quantity} 份（${countSummary}）`
+        `当前类型没有单一协议的足够库存，至少需要 ${quantity} 份（${countSummary}）`,
       );
     }
 
@@ -1955,7 +2444,7 @@ export function redeemByCode({
             )
           ORDER BY inventory.id ASC
           LIMIT ?
-        `
+        `,
       )
       .all(codeRow.type_id, codeRow.mail_protocol, selectedProtocol, quantity);
 
@@ -1974,7 +2463,7 @@ export function redeemByCode({
           redeemed_at = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND status = 'available'
-      `
+      `,
     );
     const insertRecordStmt = db.prepare(
       `
@@ -1990,7 +2479,7 @@ export function redeemByCode({
           redeemed_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
+      `,
     );
     const inventories = [];
     const recordIds = [];
@@ -2000,7 +2489,7 @@ export function redeemByCode({
         JSON.stringify([selectedProtocol]),
         codeRow.id,
         redeemedAt,
-        inventoryRow.id
+        inventoryRow.id,
       );
 
       if (!inventoryUpdate.changes) {
@@ -2016,7 +2505,7 @@ export function redeemByCode({
         inventoryRow.payload_json,
         requesterIp,
         requesterUserAgent,
-        redeemedAt
+        redeemedAt,
       );
 
       recordIds.push(Number(recordResult.lastInsertRowid));
@@ -2031,8 +2520,8 @@ export function redeemByCode({
           import_delimiter: codeRow.import_delimiter,
           status: "redeemed",
           redeemed_code_id: codeRow.id,
-          redeemed_at: redeemedAt
-        })
+          redeemed_at: redeemedAt,
+        }),
       );
     }
 
@@ -2047,7 +2536,7 @@ export function redeemByCode({
             redeemed_at = ?,
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ? AND status = 'unused'
-        `
+        `,
       )
       .run(inventoryRows[0].id, quantity, redeemedAt, codeRow.id);
 
@@ -2065,17 +2554,17 @@ export function redeemByCode({
         redeemed_quantity: quantity,
         status: "redeemed",
         redeemed_inventory_id: inventoryRows[0].id,
-        redeemed_at: redeemedAt
+        redeemed_at: redeemedAt,
       }),
       inventories,
-      type: rowToRedeemTypeFromCode(codeRow)
+      type: rowToRedeemTypeFromCode(codeRow),
     };
   });
 
   return tx.immediate(
     normalizedCode,
     String(requester_ip || "").trim(),
-    String(requester_user_agent || "").trim()
+    String(requester_user_agent || "").trim(),
   );
 }
 
@@ -2083,7 +2572,7 @@ export function getRedeemRecordsPaged({
   type_id = "",
   q = "",
   page = 1,
-  page_size = 10
+  page_size = 10,
 } = {}) {
   const safePage = clampPositiveInt(page, 1);
   const safePageSize = clampPositiveInt(page_size, 10, 100);
@@ -2096,7 +2585,9 @@ export function getRedeemRecordsPaged({
   }
 
   if (q) {
-    conditions.push("(records.normalized_code LIKE ? OR inventory.search_text LIKE ?)");
+    conditions.push(
+      "(records.normalized_code LIKE ? OR inventory.search_text LIKE ?)",
+    );
     const search = `%${normalizeRedeemCode(q)}%`;
     const fuzzy = `%${String(q).trim().toLowerCase()}%`;
     params.push(search, fuzzy);
@@ -2110,7 +2601,7 @@ export function getRedeemRecordsPaged({
         FROM redeem_records records
         LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id
         ${where}
-      `
+      `,
     )
     .get(...params);
 
@@ -2141,7 +2632,7 @@ export function getRedeemRecordsPaged({
           types.slug
         ORDER BY MAX(records.id) DESC
         LIMIT ? OFFSET ?
-      `
+      `,
     )
     .all(...params, safePageSize, Math.max(0, (safePage - 1) * safePageSize));
 
@@ -2149,8 +2640,333 @@ export function getRedeemRecordsPaged({
     items: rows.map(rowToRedeemRecordGroup),
     total: Number(totalRow?.total || 0),
     page: safePage,
-    page_size: safePageSize
+    page_size: safePageSize,
   };
+}
+
+function rowToTokenCheckJob(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    type_id: Number(row.type_id),
+    type_name: row.type_name || "",
+    inventory_status: row.inventory_status,
+    status: row.status,
+    delete_abnormal: Boolean(row.delete_abnormal),
+    total_count: Number(row.total_count || 0),
+    processed_count: Number(row.processed_count || 0),
+    live_count: Number(row.live_count || 0),
+    expired_count: Number(row.expired_count || 0),
+    error_count: Number(row.error_count || 0),
+    deleted_count: Number(row.deleted_count || 0),
+    started_at: row.started_at || "",
+    finished_at: row.finished_at || null,
+    error_message: row.error_message || "",
+    error_codes: parseJson(row.error_codes_json, {}),
+  };
+}
+
+export function createTokenCheckJob({
+  id,
+  type_id,
+  inventory_status,
+  delete_abnormal = false,
+  total_count = 0,
+}) {
+  db.prepare(
+    `
+      INSERT INTO token_check_jobs (
+        id,
+        type_id,
+        inventory_status,
+        status,
+        delete_abnormal,
+        total_count,
+        started_at,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, 'running', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `,
+  ).run(
+    String(id),
+    Number(type_id),
+    String(inventory_status),
+    delete_abnormal ? 1 : 0,
+    Number(total_count) || 0,
+  );
+  return getTokenCheckJob(id);
+}
+
+export function appendTokenCheckResult(jobId, result) {
+  const outcome = ["live", "expired", "error"].includes(result?.outcome)
+    ? result.outcome
+    : "error";
+  const counterColumn =
+    outcome === "live"
+      ? "live_count"
+      : outcome === "expired"
+        ? "expired_count"
+        : "error_count";
+  const tx = db.transaction((id, item) => {
+    db.prepare(
+      `
+        INSERT INTO token_check_results (
+          job_id,
+          inventory_id,
+          email,
+          serialized_value,
+          protocol,
+          outcome,
+          error_code,
+          error_message,
+          checked_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      String(id),
+      Number(item.inventory_id),
+      String(item.email || ""),
+      String(item.serialized_value || ""),
+      normalizeMailProtocol(item.protocol),
+      outcome,
+      String(item.error_code || ""),
+      String(item.error_message || ""),
+      String(item.checked_at || new Date().toISOString()),
+    );
+    db.prepare(
+      `
+        UPDATE token_check_jobs
+        SET
+          processed_count = processed_count + 1,
+          ${counterColumn} = ${counterColumn} + 1,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+    ).run(String(id));
+  });
+  tx(jobId, result || {});
+  return getTokenCheckJob(jobId);
+}
+
+function refreshRedeemCodeAfterInventoryDeletion(codeId) {
+  const remaining = db
+    .prepare(
+      `
+        SELECT inventory_id
+        FROM redeem_records
+        WHERE code_id = ?
+        ORDER BY id ASC
+      `,
+    )
+    .all(Number(codeId));
+  if (remaining.length) {
+    db.prepare(
+      `
+        UPDATE redeem_codes
+        SET
+          redeemed_quantity = ?,
+          redeemed_inventory_id = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+    ).run(remaining.length, Number(remaining[0].inventory_id), Number(codeId));
+    return;
+  }
+
+  db.prepare(
+    `
+      UPDATE redeem_codes
+      SET
+        redeemed_quantity = 0,
+        redeemed_inventory_id = NULL,
+        data_deleted_at = COALESCE(data_deleted_at, CURRENT_TIMESTAMP),
+        data_deleted_reason = CASE
+          WHEN data_deleted_reason = '' OR data_deleted_reason IS NULL
+          THEN 'token_check_abnormal'
+          ELSE data_deleted_reason
+        END,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'redeemed'
+    `,
+  ).run(Number(codeId));
+}
+
+export function deleteTokenCheckAbnormalInventory(jobId) {
+  const tx = db.transaction((id) => {
+    const targets = db
+      .prepare(
+        `
+          SELECT DISTINCT inventory_id
+          FROM token_check_results
+          WHERE job_id = ? AND outcome IN ('expired', 'error')
+          ORDER BY inventory_id ASC
+        `,
+      )
+      .all(String(id));
+    const selectInventory = db.prepare(
+      "SELECT id, redeemed_code_id FROM redeem_inventory WHERE id = ? LIMIT 1",
+    );
+    const selectRecordCodes = db.prepare(
+      "SELECT DISTINCT code_id FROM redeem_records WHERE inventory_id = ?",
+    );
+    const deleteRecords = db.prepare(
+      "DELETE FROM redeem_records WHERE inventory_id = ?",
+    );
+    const deleteInventory = db.prepare(
+      "DELETE FROM redeem_inventory WHERE id = ?",
+    );
+    const affectedCodeIds = new Set();
+    let deletedCount = 0;
+
+    for (const target of targets) {
+      const inventory = selectInventory.get(Number(target.inventory_id));
+      if (!inventory) {
+        continue;
+      }
+      if (inventory.redeemed_code_id) {
+        affectedCodeIds.add(Number(inventory.redeemed_code_id));
+      }
+      for (const row of selectRecordCodes.all(Number(target.inventory_id))) {
+        affectedCodeIds.add(Number(row.code_id));
+      }
+      deleteRecords.run(Number(target.inventory_id));
+      deletedCount += deleteInventory.run(Number(target.inventory_id)).changes;
+    }
+
+    for (const codeId of affectedCodeIds) {
+      refreshRedeemCodeAfterInventoryDeletion(codeId);
+    }
+
+    return deletedCount;
+  });
+
+  return tx(jobId);
+}
+
+export function completeTokenCheckJob(jobId, { deleted_count = 0 } = {}) {
+  db.prepare(
+    `
+      UPDATE token_check_jobs
+      SET
+        status = 'completed',
+        deleted_count = ?,
+        finished_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+  ).run(Number(deleted_count) || 0, String(jobId));
+  return getTokenCheckJob(jobId);
+}
+
+export function failTokenCheckJob(jobId, message) {
+  db.prepare(
+    `
+      UPDATE token_check_jobs
+      SET
+        status = 'failed',
+        error_message = ?,
+        finished_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+  ).run(String(message || "检测任务失败"), String(jobId));
+  return getTokenCheckJob(jobId);
+}
+
+export function failInterruptedTokenCheckJobs() {
+  return db
+    .prepare(
+      `
+      UPDATE token_check_jobs
+      SET
+        status = 'failed',
+        error_message = '服务重启，检测任务已中断',
+        finished_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE status = 'running'
+    `,
+    )
+    .run().changes;
+}
+
+export function getTokenCheckJob(jobId) {
+  const row = db
+    .prepare(
+      `
+        SELECT
+          jobs.*,
+          types.name AS type_name,
+          COALESCE((
+            SELECT json_group_object(error_code, count_value)
+            FROM (
+              SELECT
+                CASE WHEN error_code = '' THEN 'UNKNOWN' ELSE error_code END AS error_code,
+                COUNT(*) AS count_value
+              FROM token_check_results
+              WHERE job_id = jobs.id AND outcome = 'error'
+              GROUP BY CASE WHEN error_code = '' THEN 'UNKNOWN' ELSE error_code END
+            )
+          ), '{}') AS error_codes_json
+        FROM token_check_jobs jobs
+        LEFT JOIN redeem_email_types types ON types.id = jobs.type_id
+        WHERE jobs.id = ?
+        LIMIT 1
+      `,
+    )
+    .get(String(jobId));
+  return rowToTokenCheckJob(row);
+}
+
+export function listTokenCheckJobs({ limit = 20 } = {}) {
+  const safeLimit = clampPositiveInt(limit, 20, 100);
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          jobs.*,
+          types.name AS type_name,
+          COALESCE((
+            SELECT json_group_object(error_code, count_value)
+            FROM (
+              SELECT
+                CASE WHEN error_code = '' THEN 'UNKNOWN' ELSE error_code END AS error_code,
+                COUNT(*) AS count_value
+              FROM token_check_results
+              WHERE job_id = jobs.id AND outcome = 'error'
+              GROUP BY CASE WHEN error_code = '' THEN 'UNKNOWN' ELSE error_code END
+            )
+          ), '{}') AS error_codes_json
+        FROM token_check_jobs jobs
+        LEFT JOIN redeem_email_types types ON types.id = jobs.type_id
+        ORDER BY jobs.started_at DESC, jobs.id DESC
+        LIMIT ?
+      `,
+    )
+    .all(safeLimit);
+  return rows.map(rowToTokenCheckJob);
+}
+
+export function getTokenCheckResultLines(jobId, outcome) {
+  const safeOutcome = ["live", "expired", "error"].includes(outcome)
+    ? outcome
+    : "error";
+  return db
+    .prepare(
+      `
+        SELECT serialized_value
+        FROM token_check_results
+        WHERE job_id = ? AND outcome = ?
+        ORDER BY id ASC
+      `,
+    )
+    .all(String(jobId), safeOutcome)
+    .map((row) => String(row.serialized_value || ""))
+    .filter(Boolean);
 }
 
 export function ensureAccountsLoaded() {

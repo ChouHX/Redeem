@@ -16,6 +16,7 @@ import {
 } from "lucide-react"
 
 import {
+  ApiError,
   accessMailboxByCode,
   fetchPublicAds,
   fetchTempMailboxMessages,
@@ -27,15 +28,16 @@ import {
   type RedeemedItem,
   type TempMailAccount,
 } from "@/lib/api"
-import { copyTextToClipboard, formatDateTime, formatErrorMessage, notify } from "@/lib/shared"
+import {
+  copyTextToClipboard,
+  formatDateTime,
+  formatErrorMessage,
+  notify,
+} from "@/lib/shared"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { AdSlotCard } from "@/components/ad-slot-card"
-import {
-  Card,
-  CardContent,
-  CardHeader,
-} from "@/components/ui/card"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -110,10 +112,17 @@ function createAccountId(email: string, refreshToken: string) {
 }
 
 function normalizeProtocol(value: unknown): MailProtocol {
-  return String(value || "").trim().toLowerCase() === "graph" ? "graph" : "imap"
+  return String(value || "")
+    .trim()
+    .toLowerCase() === "graph"
+    ? "graph"
+    : "imap"
 }
 
-function normalizeProtocolList(value: unknown, fallback: MailProtocol[] = ["imap"]) {
+function normalizeProtocolList(
+  value: unknown,
+  fallback: MailProtocol[] = ["imap"]
+) {
   const values = Array.isArray(value) ? value : []
   const protocols = values
     .map(normalizeProtocol)
@@ -142,18 +151,22 @@ function readLocalAccounts(): MailAccount[] {
   }
 
   try {
-    const parsed = JSON.parse(localStorage.getItem(LOCAL_ACCOUNTS_STORAGE_KEY) || "[]")
+    const parsed = JSON.parse(
+      localStorage.getItem(LOCAL_ACCOUNTS_STORAGE_KEY) || "[]"
+    )
     if (!Array.isArray(parsed)) {
       return []
     }
 
-    return (parsed as MailAccount[]).map((account): MailAccount => ({
-      ...account,
-      id: createAccountId(account.email, account.refresh_token),
-      mail_protocol: normalizeProtocol(account.mail_protocol),
-      allowed_protocols: MAIL_PROTOCOLS,
-      source: "manual",
-    }))
+    return (parsed as MailAccount[]).map(
+      (account): MailAccount => ({
+        ...account,
+        id: createAccountId(account.email, account.refresh_token),
+        mail_protocol: normalizeProtocol(account.mail_protocol),
+        allowed_protocols: MAIL_PROTOCOLS,
+        source: "manual",
+      })
+    )
   } catch {
     return []
   }
@@ -218,14 +231,19 @@ function parseAccountLine(
   }
 }
 
-function accountFromRedeemedItem(item: RedeemedItem, index: number): MailAccount | null {
+function accountFromRedeemedItem(
+  item: RedeemedItem,
+  index: number
+): MailAccount | null {
   const protocols = normalizeProtocolList(
     item.mail_protocols,
     normalizeProtocolList(item.type.mail_protocols, [
       normalizeProtocol(item.type.mail_protocol),
     ])
   )
-  const rawLine = String(item.payload.raw_line || item.formatted_line || "").trim()
+  const rawLine = String(
+    item.payload.raw_line || item.formatted_line || ""
+  ).trim()
   const parsed = parseAccountLine(rawLine, protocols, "code")
   if (parsed) {
     return {
@@ -241,7 +259,9 @@ function accountFromRedeemedItem(item: RedeemedItem, index: number): MailAccount
       item.payload.username ||
       ""
   ).trim()
-  const refreshToken = String(item.payload.refreshtoken || item.payload.refresh_token || "").trim()
+  const refreshToken = String(
+    item.payload.refreshtoken || item.payload.refresh_token || ""
+  ).trim()
 
   if (!email || !refreshToken) {
     return null
@@ -291,7 +311,7 @@ function renderBody(message: MailMessage | null) {
   }
 
   return (
-    <pre className="m-0 whitespace-pre-wrap break-words text-sm leading-7">
+    <pre className="m-0 text-sm leading-7 break-words whitespace-pre-wrap">
       {body.content}
     </pre>
   )
@@ -311,7 +331,9 @@ export function MailConsole() {
   const [manualText, setManualText] = useState("")
   const [accounts, setAccounts] = useState<MailAccount[]>([])
   const [selectedAccountId, setSelectedAccountId] = useState("")
-  const [enabledProtocols, setEnabledProtocols] = useState<MailProtocol[]>(["imap"])
+  const [enabledProtocols, setEnabledProtocols] = useState<MailProtocol[]>([
+    "imap",
+  ])
   const [folder, setFolder] = useState<MailFolder>("inbox")
   const [resultPage, setResultPage] = useState(1)
   const [loadingAccounts, setLoadingAccounts] = useState(false)
@@ -373,7 +395,10 @@ export function MailConsole() {
 
     return fetchStates.filter((state) => state.error)
   }, [fetchStates])
-  const totalResultPages = Math.max(1, Math.ceil(resultMessages.length / MAIL_PAGE_SIZE))
+  const totalResultPages = Math.max(
+    1,
+    Math.ceil(resultMessages.length / MAIL_PAGE_SIZE)
+  )
   const pagedMessages = resultMessages.slice(
     (resultPage - 1) * MAIL_PAGE_SIZE,
     resultPage * MAIL_PAGE_SIZE
@@ -432,8 +457,12 @@ export function MailConsole() {
   }
 
   function deleteAccount(accountId: string) {
-    replaceAccounts((current) => current.filter((account) => account.id !== accountId))
-    setFetchStates((current) => current.filter((state) => state.accountId !== accountId))
+    replaceAccounts((current) =>
+      current.filter((account) => account.id !== accountId)
+    )
+    setFetchStates((current) =>
+      current.filter((state) => state.accountId !== accountId)
+    )
   }
 
   function clearAccounts() {
@@ -500,7 +529,11 @@ export function MailConsole() {
         .filter((item): item is MailAccount => Boolean(item))
 
       if (!nextAccounts.length) {
-        notify("没有可取件账号", "该兑换码没有解析出邮箱 OAuth 数据。", "destructive")
+        notify(
+          "没有可取件账号",
+          "该兑换码没有解析出邮箱 OAuth 数据。",
+          "destructive"
+        )
         return
       }
 
@@ -509,7 +542,16 @@ export function MailConsole() {
       setImportDialogOpen(false)
       notify("账号已载入", `已载入 ${nextAccounts.length} 个账号。`)
     } catch (error) {
-      notify("账号载入失败", formatErrorMessage(error), "destructive")
+      if (error instanceof ApiError && error.status === 410) {
+        setImportMode("manual")
+        notify(
+          "账号信息已删除",
+          "兑换已超过 24 小时，请切换到“临时账号”手动导入账号数据。",
+          "destructive"
+        )
+      } else {
+        notify("账号载入失败", formatErrorMessage(error), "destructive")
+      }
     } finally {
       setLoadingAccounts(false)
     }
@@ -579,14 +621,16 @@ export function MailConsole() {
       return
     }
 
-    const initialStates = protocols.map((protocol): FetchState => ({
-      accountId: account.id,
-      email: account.email,
-      protocol,
-      loading: true,
-      error: "",
-      result: null,
-    }))
+    const initialStates = protocols.map(
+      (protocol): FetchState => ({
+        accountId: account.id,
+        email: account.email,
+        protocol,
+        loading: true,
+        error: "",
+        result: null,
+      })
+    )
 
     setFetching(true)
     setFetchStates(initialStates)
@@ -646,7 +690,9 @@ export function MailConsole() {
     if (successCount > 0) {
       notify(
         "取件成功",
-        messageCount ? `已获取 ${messageCount} 封邮件。` : "取件成功，暂无邮件。"
+        messageCount
+          ? `已获取 ${messageCount} 封邮件。`
+          : "取件成功，暂无邮件。"
       )
     } else {
       notify("取件失败", "所有已启用协议均获取失败。", "destructive")
@@ -660,19 +706,25 @@ export function MailConsole() {
   }
 
   function exportAccounts() {
-    const lines = accounts.map((account) => account.raw_line || [
-      account.email,
-      account.password,
-      account.client_id,
-      account.refresh_token,
-    ].join("----"))
+    const lines = accounts.map(
+      (account) =>
+        account.raw_line ||
+        [
+          account.email,
+          account.password,
+          account.client_id,
+          account.refresh_token,
+        ].join("----")
+    )
 
     if (!lines.length) {
       notify("没有可导出账号", "请先导入账号。", "destructive")
       return
     }
 
-    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" })
+    const blob = new Blob([lines.join("\n")], {
+      type: "text/plain;charset=utf-8",
+    })
     const url = URL.createObjectURL(blob)
     const link = document.createElement("a")
     link.href = url
@@ -712,7 +764,11 @@ export function MailConsole() {
                 返回兑换页面
               </a>
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setImportDialogOpen(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setImportDialogOpen(true)}
+            >
               <UploadIcon data-icon="inline-start" />
               导入账号
             </Button>
@@ -750,7 +806,11 @@ export function MailConsole() {
                       <PlusIcon data-icon="inline-start" />
                       批量导入
                     </Button>
-                    <Button variant="outline" size="sm" onClick={exportAccounts}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={exportAccounts}
+                    >
                       <DownloadIcon data-icon="inline-start" />
                       导出邮箱
                     </Button>
@@ -789,7 +849,7 @@ export function MailConsole() {
                               <span className="size-2 rounded-full bg-primary" />
                             ) : null}
                           </span>
-                          <div className="min-w-0 flex-1 truncate text-[11px] font-medium leading-4">
+                          <div className="min-w-0 flex-1 truncate text-[11px] leading-4 font-medium">
                             {account.email}
                           </div>
                           <DropdownMenu>
@@ -866,22 +926,33 @@ export function MailConsole() {
                       className="h-8 text-xs"
                     />
                     <div className="grid grid-cols-2 gap-1.5">
-                      <Button size="sm" onClick={() => setImportDialogOpen(true)}>
+                      <Button
+                        size="sm"
+                        onClick={() => setImportDialogOpen(true)}
+                      >
                         <PlusIcon data-icon="inline-start" />
                         批量导入
                       </Button>
-                      <Button variant="outline" size="sm" onClick={exportAccounts}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={exportAccounts}
+                      >
                         <DownloadIcon data-icon="inline-start" />
                         导出邮箱
                       </Button>
                     </div>
                   </div>
                 </div>
-
               </>
             ) : null}
 
-            <CardContent className={cn("min-h-0 flex-1 overflow-y-auto", accountsCollapsed ? "p-1.5" : "p-2")}>
+            <CardContent
+              className={cn(
+                "min-h-0 flex-1 overflow-y-auto",
+                accountsCollapsed ? "p-1.5" : "p-2"
+              )}
+            >
               {accountsCollapsed ? (
                 <div className="flex flex-col items-center gap-1.5">
                   {filteredAccounts.map((account) => {
@@ -895,12 +966,13 @@ export function MailConsole() {
                         aria-label={`选择 ${account.email}`}
                         className={cn(
                           "relative flex size-8 items-center justify-center border border-border/70 bg-background/70 text-xs font-semibold transition-colors",
-                          checked && "border-primary/60 bg-primary/12 text-primary"
+                          checked &&
+                            "border-primary/60 bg-primary/12 text-primary"
                         )}
                       >
                         {account.email.slice(0, 1).toUpperCase()}
                         {checked ? (
-                          <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-primary" />
+                          <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
                         ) : null}
                       </button>
                     )
@@ -943,7 +1015,7 @@ export function MailConsole() {
 
                         <>
                           <div className="min-w-0 flex-1">
-                            <div className="truncate text-[11px] font-medium leading-4">
+                            <div className="truncate text-[11px] leading-4 font-medium">
                               {account.email}
                             </div>
                           </div>
@@ -985,7 +1057,11 @@ export function MailConsole() {
                   {!accountsCollapsed ? (
                     <>
                       <p>还没有邮箱账号。</p>
-                      <Button variant="outline" size="sm" onClick={() => setImportDialogOpen(true)}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setImportDialogOpen(true)}
+                      >
                         <PlusIcon data-icon="inline-start" />
                         导入账号
                       </Button>
@@ -1029,15 +1105,19 @@ export function MailConsole() {
                       variant="ghost"
                       size="icon-xs"
                       className="hidden lg:inline-flex"
-                      aria-label={accountsCollapsed ? "展开账号列表" : "折叠账号列表"}
+                      aria-label={
+                        accountsCollapsed ? "展开账号列表" : "折叠账号列表"
+                      }
                       onClick={() => setAccountsCollapsed((value) => !value)}
                     >
                       <MenuIcon />
                     </Button>
                     <div className="flex items-center gap-1.5">
                       {MAIL_PROTOCOLS.map((protocol) => {
-                        const disabled = !selectedAllowedProtocols.includes(protocol)
-                        const enabled = !disabled && enabledProtocols.includes(protocol)
+                        const disabled =
+                          !selectedAllowedProtocols.includes(protocol)
+                        const enabled =
+                          !disabled && enabledProtocols.includes(protocol)
 
                         return (
                           <button
@@ -1056,7 +1136,8 @@ export function MailConsole() {
                               variant={enabled ? "default" : "outline"}
                               className={cn(
                                 "h-6 cursor-pointer gap-1 border px-2.5 text-xs transition-colors",
-                                enabled && "border-primary bg-primary text-primary-foreground",
+                                enabled &&
+                                  "border-primary bg-primary text-primary-foreground",
                                 disabled && "cursor-not-allowed opacity-40"
                               )}
                             >
@@ -1088,7 +1169,11 @@ export function MailConsole() {
                     </Select>
                     <Button
                       size="xs"
-                      disabled={fetching || !selectedAccount || !selectedEnabledProtocols.length}
+                      disabled={
+                        fetching ||
+                        !selectedAccount ||
+                        !selectedEnabledProtocols.length
+                      }
                       onClick={() => {
                         if (selectedAccount) {
                           void fetchAccount(selectedAccount)
@@ -1096,7 +1181,10 @@ export function MailConsole() {
                       }}
                     >
                       {fetching ? (
-                        <Loader2Icon data-icon="inline-start" className="animate-spin" />
+                        <Loader2Icon
+                          data-icon="inline-start"
+                          className="animate-spin"
+                        />
                       ) : (
                         <DownloadIcon data-icon="inline-start" />
                       )}
@@ -1107,7 +1195,7 @@ export function MailConsole() {
               </CardContent>
             </Card>
 
-            <Card className="mt-2 gap-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border/70 bg-card/97 ">
+            <Card className="mt-2 flex min-h-0 min-w-0 flex-1 flex-col gap-0 overflow-hidden border border-border/70 bg-card/97">
               <CardHeader className="flex shrink-0 flex-row items-center justify-between gap-2 border-b border-border/70">
                 <div className="flex shrink-0 items-center gap-2">
                   <div className="flex items-center">
@@ -1123,11 +1211,13 @@ export function MailConsole() {
                       <CopyIcon />
                     </Button>
                   </div>
-                  <Badge variant="secondary">共 {resultMessages.length} 封</Badge>
+                  <Badge variant="secondary">
+                    共 {resultMessages.length} 封
+                  </Badge>
                 </div>
               </CardHeader>
 
-              <CardContent className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-1.5">
+              <CardContent className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5">
                 {fetching ? (
                   <div className="flex flex-col gap-1">
                     {Array.from({ length: 6 }).map((_, index) => (
@@ -1144,7 +1234,7 @@ export function MailConsole() {
                         <div className="truncate font-medium text-destructive">
                           {state.email} {protocolLabel(state.protocol)} 取件失败
                         </div>
-                        <div className="mt-0.5 break-words text-[11px] text-muted-foreground">
+                        <div className="mt-0.5 text-[11px] break-words text-muted-foreground">
                           {state.error}
                         </div>
                       </div>
@@ -1196,7 +1286,9 @@ export function MailConsole() {
                   <div className="flex h-full min-h-96 flex-col items-center justify-center gap-3 border border-border/70 bg-background/60 text-center text-sm text-muted-foreground">
                     <InboxIcon />
                     <div>
-                      <div className="font-medium text-foreground">暂无取件结果</div>
+                      <div className="font-medium text-foreground">
+                        暂无取件结果
+                      </div>
                       <div className="mt-1 text-xs">
                         选择协议 tag，选择邮箱后点击取件。
                       </div>
@@ -1221,7 +1313,9 @@ export function MailConsole() {
                   size="sm"
                   disabled={resultPage >= totalResultPages}
                   onClick={() =>
-                    setResultPage((page) => Math.min(totalResultPages, page + 1))
+                    setResultPage((page) =>
+                      Math.min(totalResultPages, page + 1)
+                    )
                   }
                 >
                   下一页
@@ -1239,10 +1333,12 @@ export function MailConsole() {
                 通过同一个入口载入兑换码账号或临时账号；本地账号只保存到当前浏览器。
               </DialogDescription>
             </DialogHeader>
-            <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 py-4">
+            <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-5 py-4">
               <Tabs
                 value={importMode}
-                onValueChange={(value) => setImportMode(value as "code" | "manual")}
+                onValueChange={(value) =>
+                  setImportMode(value as "code" | "manual")
+                }
                 className="min-w-0"
               >
                 <TabsList variant="line">
@@ -1251,22 +1347,30 @@ export function MailConsole() {
                 </TabsList>
 
                 <TabsContent value="manual" className="min-w-0 pt-4">
-                  <form className="flex flex-col gap-4" onSubmit={importManualAccounts}>
+                  <form
+                    className="flex flex-col gap-4"
+                    onSubmit={importManualAccounts}
+                  >
                     <Field>
-                      <FieldLabel htmlFor="manual-accounts">临时账号数据</FieldLabel>
+                      <FieldLabel htmlFor="manual-accounts">
+                        临时账号数据
+                      </FieldLabel>
                       <FieldContent className="min-w-0">
                         <Textarea
                           id="manual-accounts"
                           value={manualText}
-                          onChange={(event) => setManualText(event.target.value)}
+                          onChange={(event) =>
+                            setManualText(event.target.value)
+                          }
                           rows={8}
                           placeholder="username@example.com----password----clientid----refreshtoken"
                           wrap="off"
                           spellCheck={false}
-                          className="h-32 max-h-48 min-h-32 w-full max-w-full resize-y overflow-auto whitespace-pre font-mono leading-5 [field-sizing:fixed]"
+                          className="[field-sizing:fixed] h-32 max-h-48 min-h-32 w-full max-w-full resize-y overflow-auto font-mono leading-5 whitespace-pre"
                         />
                         <p className="text-xs text-muted-foreground">
-                          只支持 用户名----密码----clientid----refreshtoken 格式，一行一个账号。
+                          只支持 用户名----密码----clientid----refreshtoken
+                          格式，一行一个账号。
                         </p>
                       </FieldContent>
                     </Field>
@@ -1291,7 +1395,9 @@ export function MailConsole() {
                         <Input
                           id="mail-code"
                           value={redeemCode}
-                          onChange={(event) => setRedeemCode(event.target.value)}
+                          onChange={(event) =>
+                            setRedeemCode(event.target.value)
+                          }
                           placeholder="输入已兑换或待兑换卡密"
                         />
                       </FieldContent>
@@ -1306,7 +1412,10 @@ export function MailConsole() {
                       </Button>
                       <Button type="submit" disabled={loadingAccounts}>
                         {loadingAccounts ? (
-                          <Loader2Icon data-icon="inline-start" className="animate-spin" />
+                          <Loader2Icon
+                            data-icon="inline-start"
+                            className="animate-spin"
+                          />
                         ) : (
                           <SearchIcon data-icon="inline-start" />
                         )}
@@ -1324,28 +1433,32 @@ export function MailConsole() {
           <DialogContent className="flex h-[min(92svh,42rem)] max-h-[min(92svh,42rem)] w-[min(96vw,54rem)] max-w-[min(96vw,54rem)] flex-col overflow-hidden p-0 sm:max-w-[min(96vw,54rem)]">
             <DialogHeader className="border-b border-border/70 px-6 py-4">
               <DialogTitle className="line-clamp-2 pr-6 text-base">
-                {mailDetail?.subject || detailContext?.message.subject || "(无主题)"}
+                {mailDetail?.subject ||
+                  detailContext?.message.subject ||
+                  "(无主题)"}
               </DialogTitle>
               <DialogDescription className="flex flex-wrap items-center gap-x-4 gap-y-1 pr-6">
-                {detailContext
-                  ? (
-                      <>
-                        <span className="min-w-0 truncate">
-                          发件人：{resolveAddress(mailDetail || detailContext.message)}
-                        </span>
-                        <span>
-                          时间：{formatDateTime(
-                            mailDetail?.receivedDateTime ||
-                              detailContext.message.receivedDateTime
-                          )}
-                        </span>
-                        <span className="min-w-0 truncate">
-                          收件账号：{detailContext.email}
-                        </span>
-                        <span>{folder === "spam" ? "垃圾箱" : "收件箱"}</span>
-                      </>
-                    )
-                  : "邮件详情"}
+                {detailContext ? (
+                  <>
+                    <span className="min-w-0 truncate">
+                      发件人：
+                      {resolveAddress(mailDetail || detailContext.message)}
+                    </span>
+                    <span>
+                      时间：
+                      {formatDateTime(
+                        mailDetail?.receivedDateTime ||
+                          detailContext.message.receivedDateTime
+                      )}
+                    </span>
+                    <span className="min-w-0 truncate">
+                      收件账号：{detailContext.email}
+                    </span>
+                    <span>{folder === "spam" ? "垃圾箱" : "收件箱"}</span>
+                  </>
+                ) : (
+                  "邮件详情"
+                )}
               </DialogDescription>
             </DialogHeader>
             <div

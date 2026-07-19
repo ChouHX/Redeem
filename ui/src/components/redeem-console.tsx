@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 
 import {
+  ApiError,
   type AdSlotConfig,
   type FaqConfig,
   type GeminiProTaskItem,
@@ -59,7 +60,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { Field, FieldContent, FieldGroup, FieldLabel } from "@/components/ui/field"
+import {
+  Field,
+  FieldContent,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
   Table,
@@ -73,7 +79,12 @@ import { ThemeToggle } from "@/components/theme-toggle"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { createTextExportFilename, downloadTextFile } from "@/lib/utils"
-import { copyTextToClipboard, formatDateTime, formatErrorMessage, notify } from "@/lib/shared"
+import {
+  copyTextToClipboard,
+  formatDateTime,
+  formatErrorMessage,
+  notify,
+} from "@/lib/shared"
 
 type ResultLineItem = {
   formatted_line: string
@@ -87,7 +98,10 @@ function buildResultText(items: ResultLineItem[]) {
 
 const GEMINIPRO_STATUS_MAP: Record<
   number,
-  { label: string; variant: "default" | "secondary" | "destructive" | "outline" }
+  {
+    label: string
+    variant: "default" | "secondary" | "destructive" | "outline"
+  }
 > = {
   1: { label: "等待", variant: "outline" },
   2: { label: "处理中", variant: "secondary" },
@@ -175,7 +189,8 @@ function ResultOutputCard({
             <SearchIcon />
             <AlertTitle>仅展示前 10 条</AlertTitle>
             <AlertDescription>
-              当前结果共 {itemCount} 条，剩余 {hiddenItemCount} 条已隐藏，请使用下载按钮查看完整内容。
+              当前结果共 {itemCount} 条，剩余 {hiddenItemCount}{" "}
+              条已隐藏，请使用下载按钮查看完整内容。
             </AlertDescription>
           </Alert>
         ) : null}
@@ -183,7 +198,10 @@ function ResultOutputCard({
         <Textarea
           value={visibleText}
           readOnly
-          rows={Math.max(6, Math.min(MAX_VISIBLE_RESULT_ITEMS + 1, visibleItems.length + 1))}
+          rows={Math.max(
+            6,
+            Math.min(MAX_VISIBLE_RESULT_ITEMS + 1, visibleItems.length + 1)
+          )}
           wrap="off"
           spellCheck={false}
           className="min-h-64 resize-y overflow-x-scroll overflow-y-auto font-mono text-xs leading-6"
@@ -198,10 +216,13 @@ export function RedeemConsole() {
   const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
   const [faq, setFaq] = useState<FaqConfig | null>(null)
   const [activeTab, setActiveTab] = useState("exchange")
-  const [exchangeResult, setExchangeResult] = useState<RedeemExchangeResult | null>(null)
+  const [exchangeResult, setExchangeResult] =
+    useState<RedeemExchangeResult | null>(null)
   const [exchangeCode, setExchangeCode] = useState("")
   const [queryCode, setQueryCode] = useState("")
-  const [queryResult, setQueryResult] = useState<RedeemOrderQueryResult | null>(null)
+  const [queryResult, setQueryResult] = useState<RedeemOrderQueryResult | null>(
+    null
+  )
   const [loading, setLoading] = useState(true)
   const [exchangeSubmitting, setExchangeSubmitting] = useState(false)
   const [querySubmitting, setQuerySubmitting] = useState(false)
@@ -297,7 +318,13 @@ export function RedeemConsole() {
       await loadCatalog()
     } catch (error) {
       setExchangeResult(null)
-      notify("兑换失败", formatErrorMessage(error), "destructive")
+      notify(
+        error instanceof ApiError && error.status === 410
+          ? "账号信息已删除"
+          : "兑换失败",
+        formatErrorMessage(error),
+        "destructive"
+      )
     } finally {
       setExchangeSubmitting(false)
     }
@@ -319,7 +346,13 @@ export function RedeemConsole() {
       notify("查询成功", "已载入该兑换码对应的已兑换订单。")
     } catch (error) {
       setQueryResult(null)
-      notify("查询失败", formatErrorMessage(error), "destructive")
+      notify(
+        error instanceof ApiError && error.status === 410
+          ? "账号信息已删除"
+          : "查询失败",
+        formatErrorMessage(error),
+        "destructive"
+      )
     } finally {
       setQuerySubmitting(false)
     }
@@ -348,7 +381,9 @@ export function RedeemConsole() {
     }
   }
 
-  async function handleGeminiProSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleGeminiProSubmit(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault()
     await loadGeminiProTasks(geminiProCode, 1)
   }
@@ -363,9 +398,7 @@ export function RedeemConsole() {
     value: string
   ) {
     setGeminiProAccounts((current) =>
-      current.map((row) =>
-        row.key === key ? { ...row, [field]: value } : row
-      )
+      current.map((row) => (row.key === key ? { ...row, [field]: value } : row))
     )
   }
 
@@ -503,7 +536,7 @@ export function RedeemConsole() {
 
         <section className="mx-auto flex w-full max-w-4xl flex-col gap-5">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <div className="overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="[scrollbar-width:none] overflow-x-auto pb-1 [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
               <TabsList variant="line" className="min-w-max">
                 <TabsTrigger value="exchange">
                   <TicketIcon />
@@ -526,18 +559,29 @@ export function RedeemConsole() {
 
             <TabsContent value="exchange" className="flex flex-col gap-5">
               <Card className="border border-border/70 bg-card/97">
-              <CardHeader className="border-b border-border/70">
+                <CardHeader className="border-b border-border/70">
                   <CardAction>
-                    <Button variant="ghost" size="icon-sm" onClick={() => void loadCatalog()}>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => void loadCatalog()}
+                    >
                       <RefreshCcwIcon />
                       <span className="sr-only">刷新</span>
                     </Button>
                   </CardAction>
-                  <CardTitle className="text-xl md:text-2xl">输入兑换码</CardTitle>
-                  <CardDescription>支持大小写混输，每个兑换码仅可使用一次。</CardDescription>
+                  <CardTitle className="text-xl md:text-2xl">
+                    输入兑换码
+                  </CardTitle>
+                  <CardDescription>
+                    支持大小写混输，每个兑换码仅可使用一次。
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-5">
-                  <form className="flex flex-col gap-4" onSubmit={handleExchange}>
+                  <form
+                    className="flex flex-col gap-4"
+                    onSubmit={handleExchange}
+                  >
                     <FieldGroup>
                       <Field>
                         <FieldLabel htmlFor="redeem-code">兑换码</FieldLabel>
@@ -545,7 +589,9 @@ export function RedeemConsole() {
                           <Input
                             id="redeem-code"
                             value={exchangeCode}
-                            onChange={(event) => setExchangeCode(event.target.value)}
+                            onChange={(event) =>
+                              setExchangeCode(event.target.value)
+                            }
                             placeholder="例如 MAIL-ABCD-EFGH-JKLM"
                             autoComplete="off"
                             className="h-12 text-base"
@@ -555,14 +601,17 @@ export function RedeemConsole() {
                     </FieldGroup>
                     {!loading && catalog.length ? (
                       <div className="flex flex-col gap-2">
-                        <p className="text-xs text-muted-foreground">可兑类型</p>
+                        <p className="text-xs text-muted-foreground">
+                          可兑类型
+                        </p>
                         <div className="flex flex-wrap gap-2 text-xs text-foreground/80">
                           {catalog.map((type) => (
                             <span
                               key={type.id}
                               className="border border-border/70 px-2 py-1"
                             >
-                              {type.name} · 库存 {type.available_inventory_count}
+                              {type.name} · 库存{" "}
+                              {type.available_inventory_count}
                             </span>
                           ))}
                         </div>
@@ -612,21 +661,28 @@ export function RedeemConsole() {
             <TabsContent value="orders" className="flex flex-col gap-5">
               <Card className="border border-border/70 bg-card/97">
                 <CardHeader className="border-b border-border/70">
-                  <CardTitle className="text-xl md:text-2xl">订单查询</CardTitle>
+                  <CardTitle className="text-xl md:text-2xl">
+                    订单查询
+                  </CardTitle>
                   <CardDescription>
-                    输入已兑换的兑换码，查看对应订单内容。若超过 10 条，仅展示前 10 条。
+                    输入已兑换的兑换码，查看对应订单内容。若超过 10 条，仅展示前
+                    10 条。
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-5">
                   <form className="flex flex-col gap-4" onSubmit={handleQuery}>
                     <FieldGroup>
                       <Field>
-                        <FieldLabel htmlFor="redeem-order-code">兑换码</FieldLabel>
+                        <FieldLabel htmlFor="redeem-order-code">
+                          兑换码
+                        </FieldLabel>
                         <FieldContent>
                           <Input
                             id="redeem-order-code"
                             value={queryCode}
-                            onChange={(event) => setQueryCode(event.target.value)}
+                            onChange={(event) =>
+                              setQueryCode(event.target.value)
+                            }
                             placeholder="输入已兑换的兑换码"
                             autoComplete="off"
                             className="h-12 text-base"
@@ -757,246 +813,250 @@ export function RedeemConsole() {
                 </CardContent>
               </Card>
 
-              {geminiProResult ? (
-                (() => {
-                  const {
-                    items,
-                    card_code_obj: card,
-                    total,
-                    page,
-                    page_size: pageSize,
-                  } = geminiProResult
-                  const pageCount = Math.max(
-                    Math.ceil(total / (pageSize || GEMINIPRO_PAGE_SIZE)),
-                    1
-                  )
-                  const remainingQuota = Math.max(
-                    0,
-                    (card?.total_quota || 0) - (card?.used_quota || 0)
-                  )
+              {geminiProResult
+                ? (() => {
+                    const {
+                      items,
+                      card_code_obj: card,
+                      total,
+                      page,
+                      page_size: pageSize,
+                    } = geminiProResult
+                    const pageCount = Math.max(
+                      Math.ceil(total / (pageSize || GEMINIPRO_PAGE_SIZE)),
+                      1
+                    )
+                    const remainingQuota = Math.max(
+                      0,
+                      (card?.total_quota || 0) - (card?.used_quota || 0)
+                    )
 
-                  return (
-                    <Card className="border border-border/70 bg-card/97">
-                      <CardHeader className="border-b border-border/70">
-                        <CardAction>
-                          <Popover>
-                            <PopoverTrigger asChild>
-                              <Button variant="outline" size="sm">
-                                <InfoIcon data-icon="inline-start" />
-                                剩余 {remainingQuota}
-                              </Button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              align="end"
-                              className="w-64"
-                            >
-                              <div className="grid grid-cols-3 gap-2 text-center">
-                                <div className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-2 py-2">
-                                  <span className="text-[10px] text-muted-foreground">
-                                    总额度
-                                  </span>
-                                  <span className="font-heading text-base font-medium text-foreground">
-                                    {card?.total_quota ?? "-"}
-                                  </span>
-                                </div>
-                                <div className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-2 py-2">
-                                  <span className="text-[10px] text-muted-foreground">
-                                    已使用
-                                  </span>
-                                  <span className="font-heading text-base font-medium text-foreground">
-                                    {card?.used_quota ?? "-"}
-                                  </span>
-                                </div>
-                                <div className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-2 py-2">
-                                  <span className="text-[10px] text-muted-foreground">
-                                    剩余
-                                  </span>
-                                  <span className="font-heading text-base font-medium text-primary">
-                                    {remainingQuota}
-                                  </span>
-                                </div>
-                              </div>
-                            </PopoverContent>
-                          </Popover>
-                        </CardAction>
-                        <CardTitle>任务记录</CardTitle>
-                        <CardDescription>
-                          共 {total} 条任务，当前展示第 {page} / {pageCount} 页。
-                        </CardDescription>
-                      </CardHeader>
-                      <CardContent className="flex flex-col gap-5">
-                        {items.length ? (
-                          <>
-                            {/* Desktop table */}
-                            <div className="hidden overflow-hidden border border-border/70 md:block">
-                              <Table>
-                                <TableHeader>
-                                  <TableRow>
-                                    <TableHead className="w-16">#</TableHead>
-                                    <TableHead>账号信息</TableHead>
-                                    <TableHead className="w-24">状态</TableHead>
-                                    <TableHead>结果</TableHead>
-                                    <TableHead className="w-40">提交时间</TableHead>
-                                    <TableHead className="w-40">完成时间</TableHead>
-                                    <TableHead className="w-28 text-right">
-                                      操作
-                                    </TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {items.map((task) => (
-                                    <TableRow key={task.id}>
-                                      <TableCell className="text-muted-foreground">
-                                        {task.id}
-                                      </TableCell>
-                                      <TableCell>
-                                        <code className="font-mono text-[11px] break-all whitespace-normal">
-                                          {task.account_info || "-"}
-                                        </code>
-                                      </TableCell>
-                                      <TableCell>
-                                        <GeminiProStatusBadge task={task} />
-                                      </TableCell>
-                                      <TableCell className="whitespace-normal">
-                                        {task.result || "-"}
-                                      </TableCell>
-                                      <TableCell className="text-xs text-muted-foreground">
-                                        {formatDateTime(task.submitted_at)}
-                                      </TableCell>
-                                      <TableCell className="text-xs text-muted-foreground">
-                                        {formatDateTime(task.completed_at)}
-                                      </TableCell>
-                                      <TableCell className="text-right">
-                                        {task.is_you_hui_url &&
-                                        task.you_hui_url ? (
-                                          <Button
-                                            variant="outline"
-                                            size="xs"
-                                            asChild
-                                          >
-                                            <a
-                                              href={task.you_hui_url}
-                                              target="_blank"
-                                              rel="noreferrer"
-                                            >
-                                              <ExternalLinkIcon data-icon="inline-start" />
-                                              打开
-                                            </a>
-                                          </Button>
-                                        ) : (
-                                          <span className="text-xs text-muted-foreground">
-                                            -
-                                          </span>
-                                        )}
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            </div>
-
-                            {/* Mobile card list */}
-                            <div className="flex flex-col gap-3 md:hidden">
-                              {items.map((task) => (
-                                <div
-                                  key={task.id}
-                                  className="flex flex-col gap-2 border border-border/70 bg-background/60 px-3 py-3"
-                                >
-                                  <div className="flex items-start justify-between gap-2">
-                                    <span className="text-xs text-muted-foreground">
-                                      #{task.id}
+                    return (
+                      <Card className="border border-border/70 bg-card/97">
+                        <CardHeader className="border-b border-border/70">
+                          <CardAction>
+                            <Popover>
+                              <PopoverTrigger asChild>
+                                <Button variant="outline" size="sm">
+                                  <InfoIcon data-icon="inline-start" />
+                                  剩余 {remainingQuota}
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent align="end" className="w-64">
+                                <div className="grid grid-cols-3 gap-2 text-center">
+                                  <div className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-2 py-2">
+                                    <span className="text-[10px] text-muted-foreground">
+                                      总额度
                                     </span>
-                                    <GeminiProStatusBadge task={task} />
+                                    <span className="font-heading text-base font-medium text-foreground">
+                                      {card?.total_quota ?? "-"}
+                                    </span>
                                   </div>
-                                  <code className="font-mono text-[11px] break-all text-foreground/90">
-                                    {task.account_info || "-"}
-                                  </code>
-                                  {task.result ? (
-                                    <p className="text-xs text-foreground/90">
-                                      {task.result}
-                                    </p>
-                                  ) : null}
-                                  <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-                                    <div>
-                                      <div>提交</div>
-                                      <div className="text-foreground/80">
-                                        {formatDateTime(task.submitted_at)}
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <div>完成</div>
-                                      <div className="text-foreground/80">
-                                        {formatDateTime(task.completed_at)}
-                                      </div>
-                                    </div>
+                                  <div className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-2 py-2">
+                                    <span className="text-[10px] text-muted-foreground">
+                                      已使用
+                                    </span>
+                                    <span className="font-heading text-base font-medium text-foreground">
+                                      {card?.used_quota ?? "-"}
+                                    </span>
                                   </div>
-                                  {task.is_you_hui_url && task.you_hui_url ? (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      asChild
-                                      className="self-start"
-                                    >
-                                      <a
-                                        href={task.you_hui_url}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                      >
-                                        <ExternalLinkIcon data-icon="inline-start" />
-                                        打开优惠链接
-                                      </a>
-                                    </Button>
-                                  ) : null}
+                                  <div className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-2 py-2">
+                                    <span className="text-[10px] text-muted-foreground">
+                                      剩余
+                                    </span>
+                                    <span className="font-heading text-base font-medium text-primary">
+                                      {remainingQuota}
+                                    </span>
+                                  </div>
                                 </div>
-                              ))}
-                            </div>
-                          </>
-                        ) : (
-                          <Alert>
-                            <SearchIcon />
-                            <AlertTitle>暂无任务记录</AlertTitle>
-                            <AlertDescription>
-                              该卡密目前还没有任何任务记录。
-                            </AlertDescription>
-                          </Alert>
-                        )}
+                              </PopoverContent>
+                            </Popover>
+                          </CardAction>
+                          <CardTitle>任务记录</CardTitle>
+                          <CardDescription>
+                            共 {total} 条任务，当前展示第 {page} / {pageCount}{" "}
+                            页。
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="flex flex-col gap-5">
+                          {items.length ? (
+                            <>
+                              {/* Desktop table */}
+                              <div className="hidden overflow-hidden border border-border/70 md:block">
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead className="w-16">#</TableHead>
+                                      <TableHead>账号信息</TableHead>
+                                      <TableHead className="w-24">
+                                        状态
+                                      </TableHead>
+                                      <TableHead>结果</TableHead>
+                                      <TableHead className="w-40">
+                                        提交时间
+                                      </TableHead>
+                                      <TableHead className="w-40">
+                                        完成时间
+                                      </TableHead>
+                                      <TableHead className="w-28 text-right">
+                                        操作
+                                      </TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {items.map((task) => (
+                                      <TableRow key={task.id}>
+                                        <TableCell className="text-muted-foreground">
+                                          {task.id}
+                                        </TableCell>
+                                        <TableCell>
+                                          <code className="font-mono text-[11px] break-all whitespace-normal">
+                                            {task.account_info || "-"}
+                                          </code>
+                                        </TableCell>
+                                        <TableCell>
+                                          <GeminiProStatusBadge task={task} />
+                                        </TableCell>
+                                        <TableCell className="whitespace-normal">
+                                          {task.result || "-"}
+                                        </TableCell>
+                                        <TableCell className="text-xs text-muted-foreground">
+                                          {formatDateTime(task.submitted_at)}
+                                        </TableCell>
+                                        <TableCell className="text-xs text-muted-foreground">
+                                          {formatDateTime(task.completed_at)}
+                                        </TableCell>
+                                        <TableCell className="text-right">
+                                          {task.is_you_hui_url &&
+                                          task.you_hui_url ? (
+                                            <Button
+                                              variant="outline"
+                                              size="xs"
+                                              asChild
+                                            >
+                                              <a
+                                                href={task.you_hui_url}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                              >
+                                                <ExternalLinkIcon data-icon="inline-start" />
+                                                打开
+                                              </a>
+                                            </Button>
+                                          ) : (
+                                            <span className="text-xs text-muted-foreground">
+                                              -
+                                            </span>
+                                          )}
+                                        </TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </div>
 
-                        {pageCount > 1 ? (
-                          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                            <span>
-                              第 {page} / {pageCount} 页
-                            </span>
-                            <div className="flex gap-2">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={geminiProSubmitting || page <= 1}
-                                onClick={() =>
-                                  void handleGeminiProPageChange(page - 1)
-                                }
-                              >
-                                上一页
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={
-                                  geminiProSubmitting || page >= pageCount
-                                }
-                                onClick={() =>
-                                  void handleGeminiProPageChange(page + 1)
-                                }
-                              >
-                                下一页
-                              </Button>
+                              {/* Mobile card list */}
+                              <div className="flex flex-col gap-3 md:hidden">
+                                {items.map((task) => (
+                                  <div
+                                    key={task.id}
+                                    className="flex flex-col gap-2 border border-border/70 bg-background/60 px-3 py-3"
+                                  >
+                                    <div className="flex items-start justify-between gap-2">
+                                      <span className="text-xs text-muted-foreground">
+                                        #{task.id}
+                                      </span>
+                                      <GeminiProStatusBadge task={task} />
+                                    </div>
+                                    <code className="font-mono text-[11px] break-all text-foreground/90">
+                                      {task.account_info || "-"}
+                                    </code>
+                                    {task.result ? (
+                                      <p className="text-xs text-foreground/90">
+                                        {task.result}
+                                      </p>
+                                    ) : null}
+                                    <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+                                      <div>
+                                        <div>提交</div>
+                                        <div className="text-foreground/80">
+                                          {formatDateTime(task.submitted_at)}
+                                        </div>
+                                      </div>
+                                      <div>
+                                        <div>完成</div>
+                                        <div className="text-foreground/80">
+                                          {formatDateTime(task.completed_at)}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    {task.is_you_hui_url && task.you_hui_url ? (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        asChild
+                                        className="self-start"
+                                      >
+                                        <a
+                                          href={task.you_hui_url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          <ExternalLinkIcon data-icon="inline-start" />
+                                          打开优惠链接
+                                        </a>
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          ) : (
+                            <Alert>
+                              <SearchIcon />
+                              <AlertTitle>暂无任务记录</AlertTitle>
+                              <AlertDescription>
+                                该卡密目前还没有任何任务记录。
+                              </AlertDescription>
+                            </Alert>
+                          )}
+
+                          {pageCount > 1 ? (
+                            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                              <span>
+                                第 {page} / {pageCount} 页
+                              </span>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={geminiProSubmitting || page <= 1}
+                                  onClick={() =>
+                                    void handleGeminiProPageChange(page - 1)
+                                  }
+                                >
+                                  上一页
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={
+                                    geminiProSubmitting || page >= pageCount
+                                  }
+                                  onClick={() =>
+                                    void handleGeminiProPageChange(page + 1)
+                                  }
+                                >
+                                  下一页
+                                </Button>
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
-                      </CardContent>
-                    </Card>
-                  )
-                })()
-              ) : null}
+                          ) : null}
+                        </CardContent>
+                      </Card>
+                    )
+                  })()
+                : null}
             </TabsContent>
           </Tabs>
 
@@ -1065,7 +1125,10 @@ export function RedeemConsole() {
                 <li className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-3 py-2 text-xs">
                   <div className="flex items-center gap-1.5 font-medium text-foreground">
                     <span>🌍 地区 / 年龄</span>
-                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                    <Badge
+                      variant="secondary"
+                      className="h-4 px-1.5 text-[10px]"
+                    >
                       必须
                     </Badge>
                   </div>
@@ -1084,7 +1147,10 @@ export function RedeemConsole() {
                 <li className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-3 py-2 text-xs">
                   <div className="flex items-center gap-1.5 font-medium text-foreground">
                     <span>⚠️ 新号风险</span>
-                    <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">
+                    <Badge
+                      variant="destructive"
+                      className="h-4 px-1.5 text-[10px]"
+                    >
                       高风险
                     </Badge>
                   </div>

@@ -8,6 +8,9 @@
 - 订单查询与 TXT 下载
 - 邮箱收件箱/垃圾箱分页查看
 - 管理后台库存、卡密、记录管理
+- 已兑换卡密回退：销毁卡密并将关联账号恢复为可用库存
+- Worker Thread 后台 Token 测活、结果统计/下载与异常账号清理
+- 兑换后 24 小时自动删除账号数据，取件页支持手动导入兜底
 
 ## 环境要求
 
@@ -68,6 +71,9 @@ npm start
 - `ADMIN_TOKEN`，默认 `admin123`
 - `ADMIN_PATH`，默认 `/admin`
 - `DB_PATH`，默认 `./outlook_manager.db`
+- `REDEEM_ACCESS_TTL_MS`，兑换后账号数据保留时长，默认 `86400000`（24 小时）
+- `TOKEN_CHECK_CONCURRENCY`，后台测活线程内并发数，默认 `6`
+- `TOKEN_CHECK_TIMEOUT_MS`，单个 Token 测活超时，默认 `15000`
 
 ## 测试
 

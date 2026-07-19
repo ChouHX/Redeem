@@ -264,6 +264,8 @@ export type RedeemCodeItem = {
   expires_at: string | null
   redeemed_inventory_id: number | null
   redeemed_at: string | null
+  data_deleted_at: string | null
+  data_deleted_reason: string
   created_at: string
   updated_at: string
 }
@@ -303,6 +305,34 @@ export type RedeemTypeDeleteResult = {
   deleted_inventory_count: number
   deleted_code_count: number
   deleted_record_count: number
+}
+
+export type RedeemRollbackResult = {
+  code_id: number
+  code: string
+  restored_inventory_count: number
+  deleted_record_count: number
+}
+
+export type TokenCheckJobStatus = "running" | "completed" | "failed"
+
+export type TokenCheckJob = {
+  id: string
+  type_id: number
+  type_name: string
+  inventory_status: "available" | "unavailable" | "redeemed"
+  status: TokenCheckJobStatus
+  delete_abnormal: boolean
+  total_count: number
+  processed_count: number
+  live_count: number
+  expired_count: number
+  error_count: number
+  deleted_count: number
+  started_at: string
+  finished_at: string | null
+  error_message: string
+  error_codes: Record<string, number>
 }
 
 export type RedeemRecordItem = {
@@ -979,6 +1009,17 @@ export async function updateAdminCodeStatus(
   return payload
 }
 
+export async function rollbackAdminCode(token: string, codeId: number) {
+  const payload = await apiRequest<RedeemRollbackResult>(
+    `/api/redeem/admin/codes/${codeId}/rollback`,
+    {
+      method: "POST",
+      token,
+    }
+  )
+  return payload
+}
+
 export async function deleteAdminCode(token: string, codeId: number) {
   const payload = await apiRequest<{ code_id: number }>(
     `/api/redeem/admin/codes/${codeId}`,
@@ -1085,6 +1126,82 @@ export async function fetchAdminRecords(
     }
   )
   return payload.data
+}
+
+export async function startAdminTokenCheck(
+  token: string,
+  body: {
+    type_id: number
+    inventory_status: "available" | "unavailable" | "redeemed"
+    delete_abnormal: boolean
+  }
+) {
+  const payload = await apiRequest<TokenCheckJob>(
+    "/api/redeem/admin/token-checks",
+    {
+      method: "POST",
+      token,
+      body,
+    }
+  )
+  return payload
+}
+
+export async function fetchAdminTokenChecks(token: string, limit = 20) {
+  const payload = await apiRequest<{ items: TokenCheckJob[] }>(
+    `/api/redeem/admin/token-checks${createQuery({ limit })}`,
+    {
+      method: "GET",
+      token,
+    }
+  )
+  return payload.data.items
+}
+
+export async function fetchAdminTokenCheck(token: string, jobId: string) {
+  const payload = await apiRequest<TokenCheckJob>(
+    `/api/redeem/admin/token-checks/${encodeURIComponent(jobId)}`,
+    {
+      method: "GET",
+      token,
+    }
+  )
+  return payload.data
+}
+
+export async function downloadAdminTokenCheck(
+  token: string,
+  jobId: string,
+  outcome: "live" | "expired" | "error"
+) {
+  const response = await textRequest(
+    `/api/redeem/admin/token-checks/${encodeURIComponent(jobId)}/download/${outcome}`,
+    {
+      method: "GET",
+      token,
+    }
+  )
+  const text = await response.text()
+  const disposition = response.headers.get("content-disposition") || ""
+  const match = disposition.match(/filename=([^;]+)/i)
+  return {
+    text,
+    filename: match?.[1] || `token_check_${outcome}.txt`,
+  }
+}
+
+export async function deleteAdminTokenCheckAbnormal(
+  token: string,
+  jobId: string
+) {
+  const payload = await apiRequest<TokenCheckJob>(
+    `/api/redeem/admin/token-checks/${encodeURIComponent(jobId)}/delete-abnormal`,
+    {
+      method: "POST",
+      token,
+    }
+  )
+  return payload
 }
 
 export async function fetchAdminRecordDetail(token: string, codeId: number) {

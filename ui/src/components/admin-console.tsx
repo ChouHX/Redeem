@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import {
+  ActivityIcon,
   CopyIcon,
   DownloadIcon,
   EllipsisVerticalIcon,
@@ -52,20 +53,26 @@ import {
   type RedeemRecordGroup,
   type RedeemRecordItem,
   type RedeemType,
+  type TokenCheckJob,
   type TypeFormPayload,
   createAdminType,
+  deleteAdminTokenCheckAbnormal,
   deleteAdminCode,
   deleteAdminInventory,
   deleteAdminType,
+  downloadAdminTokenCheck,
   fetchAdminCodes,
   fetchAdminInventory,
   fetchAdminOverview,
   fetchAdminRecordDetail,
   fetchAdminRecords,
+  fetchAdminTokenChecks,
   fetchAdminTypes,
   generateAdminCodes,
   importAdminInventory,
   importAdminInventoryFile,
+  rollbackAdminCode,
+  startAdminTokenCheck,
   updateAdminCodeStatus,
   updateAdminInventoryStatus,
   updateAdminAds,
@@ -530,6 +537,10 @@ export function AdminConsole() {
   const [codeGenerateDialogOpen, setCodeGenerateDialogOpen] = useState(false)
   const [codeBatchEditDialogOpen, setCodeBatchEditDialogOpen] = useState(false)
   const [recordDetailDialogOpen, setRecordDetailDialogOpen] = useState(false)
+  const [tokenCheckStartDialogOpen, setTokenCheckStartDialogOpen] =
+    useState(false)
+  const [tokenCheckResultDialogOpen, setTokenCheckResultDialogOpen] =
+    useState(false)
   const [editingType, setEditingType] = useState<RedeemType | null>(null)
   const [deletingType, setDeletingType] = useState<RedeemType | null>(null)
   const [typeEditor, setTypeEditor] = useState<TypeEditorState>(
@@ -607,8 +618,20 @@ export function AdminConsole() {
   const [recordDetail, setRecordDetail] = useState<RedeemRecordDetail | null>(
     null
   )
+  const [tokenCheckJobs, setTokenCheckJobs] = useState<TokenCheckJob[]>([])
+  const [activeTokenCheckJobId, setActiveTokenCheckJobId] = useState("")
+  const [tokenCheckTypeId, setTokenCheckTypeId] = useState("")
+  const [tokenCheckInventoryStatus, setTokenCheckInventoryStatus] = useState<
+    "available" | "unavailable" | "redeemed"
+  >("available")
+  const [tokenCheckDeleteAbnormal, setTokenCheckDeleteAbnormal] =
+    useState(false)
+  const [tokenCheckSubmitting, setTokenCheckSubmitting] = useState(false)
+  const [tokenCheckDeleting, setTokenCheckDeleting] = useState(false)
   const inventoryImportFileInputRef = useRef<HTMLInputElement | null>(null)
   const tokenRef = useRef("")
+  const startedTokenCheckJobsRef = useRef(new Set<string>())
+  const notifiedTokenCheckJobsRef = useRef(new Set<string>())
 
   const inventoryImportType = types.find(
     (type) => String(type.id) === inventoryImportTypeId
@@ -641,6 +664,7 @@ export function AdminConsole() {
       return constrained.length ? constrained : allowedProtocols
     })
     setGenerateTypeId((current) => current || selectedTypeId)
+    setTokenCheckTypeId((current) => current || selectedTypeId)
   }
 
   function showToast(title: string, description: string) {
@@ -673,6 +697,12 @@ export function AdminConsole() {
     setInventoryImportPhase(null)
     setSelectedInventoryIds([])
     setSelectedCodeIds([])
+    setTokenCheckJobs([])
+    setActiveTokenCheckJobId("")
+    setTokenCheckStartDialogOpen(false)
+    setTokenCheckResultDialogOpen(false)
+    startedTokenCheckJobsRef.current.clear()
+    notifiedTokenCheckJobsRef.current.clear()
     showToast("会话已结束", message)
   }
 
@@ -828,6 +858,53 @@ export function AdminConsole() {
     }
   }
 
+  async function loadTokenCheckJobs(activeToken = tokenRef.current) {
+    if (!activeToken) {
+      return
+    }
+
+    try {
+      const nextJobs = await fetchAdminTokenChecks(activeToken)
+      setTokenCheckJobs(nextJobs)
+      setActiveTokenCheckJobId((current) =>
+        current && nextJobs.some((job) => job.id === current)
+          ? current
+          : nextJobs[0]?.id || ""
+      )
+
+      for (const job of nextJobs) {
+        if (
+          job.status !== "running" &&
+          startedTokenCheckJobsRef.current.has(job.id) &&
+          !notifiedTokenCheckJobsRef.current.has(job.id)
+        ) {
+          notifiedTokenCheckJobsRef.current.add(job.id)
+          setActiveTokenCheckJobId(job.id)
+          setTokenCheckResultDialogOpen(true)
+          if (job.status === "completed") {
+            showSuccessToast(
+              "后台测活已完成",
+              `存活 ${job.live_count}，令牌过期 ${job.expired_count}，报错 ${job.error_count}。`
+            )
+            void Promise.all([
+              loadOverviewAndTypes(activeToken),
+              loadInventory(activeToken),
+              loadCodes(activeToken),
+              loadRecords(activeToken),
+            ])
+          } else {
+            showErrorToast(
+              "后台测活失败",
+              job.error_message || "检测线程异常退出"
+            )
+          }
+        }
+      }
+    } catch (error) {
+      handleApiError(error, "测活任务加载失败")
+    }
+  }
+
   async function refreshDashboard(activeToken = token) {
     await Promise.all([
       loadOverviewAndTypes(activeToken),
@@ -866,6 +943,21 @@ export function AdminConsole() {
   useEffect(() => {
     tokenRef.current = token
   }, [token])
+
+  useEffect(() => {
+    if (!authenticated || !token) {
+      return
+    }
+
+    void loadTokenCheckJobs(token)
+    const timer = window.setInterval(() => {
+      void loadTokenCheckJobs(tokenRef.current)
+    }, 3000)
+
+    return () => window.clearInterval(timer)
+    // Polling intentionally follows the current authenticated token only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authenticated, token])
 
   useEffect(() => {
     const storedToken = sessionStorage.getItem("admin_token")
@@ -931,6 +1023,7 @@ export function AdminConsole() {
             return constrained.length ? constrained : allowedProtocols
           })
           setGenerateTypeId((current) => current || String(firstType.id))
+          setTokenCheckTypeId((current) => current || String(firstType.id))
         }
       } catch {
         sessionStorage.removeItem("admin_token")
@@ -1466,6 +1559,101 @@ export function AdminConsole() {
     }
   }
 
+  function openTokenCheckStartDialog() {
+    setTokenCheckTypeId(
+      (current) =>
+        current || inventoryFilters.typeId || String(types[0]?.id || "")
+    )
+    if (
+      inventoryFilters.status === "available" ||
+      inventoryFilters.status === "unavailable" ||
+      inventoryFilters.status === "redeemed"
+    ) {
+      setTokenCheckInventoryStatus(inventoryFilters.status)
+    }
+    setTokenCheckStartDialogOpen(true)
+  }
+
+  async function handleStartTokenCheck(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault()
+    if (!tokenCheckTypeId) {
+      showErrorToast("请选择检测分类", "后台测活需要指定一个账号分类。")
+      return
+    }
+
+    setTokenCheckSubmitting(true)
+    try {
+      const payload = await startAdminTokenCheck(token, {
+        type_id: Number(tokenCheckTypeId),
+        inventory_status: tokenCheckInventoryStatus,
+        delete_abnormal: tokenCheckDeleteAbnormal,
+      })
+      startedTokenCheckJobsRef.current.add(payload.data.id)
+      setTokenCheckJobs((current) => [
+        payload.data,
+        ...current.filter((job) => job.id !== payload.data.id),
+      ])
+      setActiveTokenCheckJobId(payload.data.id)
+      setTokenCheckStartDialogOpen(false)
+      showSuccessToast("后台测活已启动", payload.message)
+    } catch (error) {
+      handleApiError(error, "后台测活启动失败")
+    } finally {
+      setTokenCheckSubmitting(false)
+    }
+  }
+
+  async function handleDownloadTokenCheck(
+    job: TokenCheckJob,
+    outcome: "live" | "expired" | "error"
+  ) {
+    try {
+      const exported = await downloadAdminTokenCheck(token, job.id, outcome)
+      downloadTextFile(exported.text, exported.filename)
+      showSuccessToast(
+        "测活结果已下载",
+        `已下载${outcome === "live" ? "存活" : outcome === "expired" ? "令牌过期" : "报错"}账号。`
+      )
+    } catch (error) {
+      handleApiError(error, "测活结果下载失败")
+    }
+  }
+
+  async function handleDeleteTokenCheckAbnormal(job: TokenCheckJob) {
+    const abnormalCount = job.expired_count + job.error_count
+    if (!abnormalCount) {
+      showToast("没有异常账号", "本次测活没有令牌过期或报错账号。")
+      return
+    }
+    const confirmed = window.confirm(
+      `确定删除本次检测中的 ${abnormalCount} 个异常账号吗？该操作会同时清理关联兑换数据。`
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setTokenCheckDeleting(true)
+    try {
+      const payload = await deleteAdminTokenCheckAbnormal(token, job.id)
+      setTokenCheckJobs((current) =>
+        current.map((item) => (item.id === job.id ? payload.data : item))
+      )
+      showSuccessToast("异常账号已删除", payload.message)
+      await Promise.all([
+        loadOverviewAndTypes(),
+        loadInventory(),
+        loadCodes(),
+        loadRecords(),
+      ])
+    } catch (error) {
+      handleApiError(error, "删除异常账号失败")
+    } finally {
+      setTokenCheckDeleting(false)
+    }
+  }
+
   function toggleSelectedCode(codeId: number, checked: boolean) {
     setSelectedCodeIds((current) => {
       const next = new Set(current)
@@ -1530,6 +1718,31 @@ export function AdminConsole() {
       await Promise.all([loadOverviewAndTypes(), loadCodes(), loadRecords()])
     } catch (error) {
       handleApiError(error, "删除卡密失败")
+    }
+  }
+
+  async function handleRollbackCode(codeId: number, code: string) {
+    const confirmed = window.confirm(
+      `确定回退卡密 ${code} 吗？卡密会被销毁，关联账号将重新入库并恢复为可用状态。`
+    )
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      const payload = await rollbackAdminCode(token, codeId)
+      showSuccessToast("卡密回退完成", payload.message)
+      setRecordDetailDialogOpen(false)
+      setRecordDetail(null)
+      setSelectedCodeIds((current) => current.filter((id) => id !== codeId))
+      await Promise.all([
+        loadOverviewAndTypes(),
+        loadInventory(),
+        loadCodes(),
+        loadRecords(),
+      ])
+    } catch (error) {
+      handleApiError(error, "卡密回退失败")
     }
   }
 
@@ -1766,6 +1979,13 @@ export function AdminConsole() {
   const hiddenRecordDetailCount = recordDetail
     ? Math.max(0, recordDetail.items.length - MAX_RECORD_PREVIEW_ITEMS)
     : 0
+  const activeTokenCheckJob =
+    tokenCheckJobs.find((job) => job.id === activeTokenCheckJobId) ||
+    tokenCheckJobs[0] ||
+    null
+  const runningTokenCheckJob = tokenCheckJobs.find(
+    (job) => job.status === "running"
+  )
 
   if (checkingAuth) {
     return (
@@ -1885,6 +2105,22 @@ export function AdminConsole() {
             <Button
               variant="outline"
               size="sm"
+              onClick={() => {
+                setActiveTokenCheckJobId(
+                  (current) => current || tokenCheckJobs[0]?.id || ""
+                )
+                setTokenCheckResultDialogOpen(true)
+              }}
+              className="hidden md:inline-flex"
+            >
+              <ActivityIcon data-icon="inline-start" />
+              {runningTokenCheckJob
+                ? `测活 ${runningTokenCheckJob.processed_count}/${runningTokenCheckJob.total_count}`
+                : "测活任务"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => void refreshDashboard()}
               className="hidden md:inline-flex"
             >
@@ -1928,6 +2164,16 @@ export function AdminConsole() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setActiveTokenCheckJobId(
+                      (current) => current || tokenCheckJobs[0]?.id || ""
+                    )
+                    setTokenCheckResultDialogOpen(true)
+                  }}
+                >
+                  测活任务
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => void refreshDashboard()}>
                   刷新数据
                 </DropdownMenuItem>
@@ -2097,6 +2343,15 @@ export function AdminConsole() {
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={openTokenCheckStartDialog}
+                    disabled={Boolean(runningTokenCheckJob)}
+                  >
+                    <ActivityIcon data-icon="inline-start" />
+                    {runningTokenCheckJob ? "测活进行中" : "后台测活"}
+                  </Button>
                   <Button
                     size="sm"
                     onClick={() => setInventoryImportDialogOpen(true)}
@@ -2792,6 +3047,22 @@ export function AdminConsole() {
                                     删除卡密
                                   </DropdownMenuItem>
                                 </DropdownMenuGroup>
+                                {item.status === "redeemed" ? (
+                                  <>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      variant="destructive"
+                                      onSelect={() => {
+                                        void handleRollbackCode(
+                                          item.id,
+                                          item.code
+                                        )
+                                      }}
+                                    >
+                                      回退并销毁卡密
+                                    </DropdownMenuItem>
+                                  </>
+                                ) : null}
                               </DropdownMenuContent>
                             </DropdownMenu>
                           </TableCell>
@@ -3067,15 +3338,29 @@ export function AdminConsole() {
                             </Badge>
                           </TableCell>
                           <TableCell className="px-4 text-right align-top">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() =>
-                                void openRecordDetail(item.code_id)
-                              }
-                            >
-                              详情
-                            </Button>
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  void openRecordDetail(item.code_id)
+                                }
+                              >
+                                详情
+                              </Button>
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() =>
+                                  void handleRollbackCode(
+                                    item.code_id,
+                                    item.code
+                                  )
+                                }
+                              >
+                                回退
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))
@@ -3116,6 +3401,323 @@ export function AdminConsole() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog
+        open={tokenCheckStartDialogOpen}
+        onOpenChange={setTokenCheckStartDialogOpen}
+      >
+        <DialogContent className="max-w-[min(96vw,36rem)] p-0 sm:max-w-[min(96vw,36rem)]">
+          <DialogHeader className="border-b border-border/70 px-5 py-4">
+            <DialogTitle>启动后台测活</DialogTitle>
+            <DialogDescription>
+              后端会另起 Worker Thread，按分类、库存状态和类型协议检测 Refresh
+              Token。
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleStartTokenCheck}>
+            <div className="flex flex-col gap-5 px-5 py-4">
+              <FieldGroup>
+                <Field>
+                  <FieldLabel>账号分类</FieldLabel>
+                  <FieldContent>
+                    <Select
+                      value={tokenCheckTypeId || undefined}
+                      onValueChange={setTokenCheckTypeId}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="选择检测分类" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {types.map((type) => (
+                            <SelectItem key={type.id} value={String(type.id)}>
+                              {type.name} ·{" "}
+                              {type.mail_protocol === "graph"
+                                ? "Graph"
+                                : "IMAP"}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </FieldContent>
+                </Field>
+                <Field>
+                  <FieldLabel>账号可用状态</FieldLabel>
+                  <FieldContent>
+                    <Select
+                      value={tokenCheckInventoryStatus}
+                      onValueChange={(value) =>
+                        setTokenCheckInventoryStatus(
+                          value as "available" | "unavailable" | "redeemed"
+                        )
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="available">可用</SelectItem>
+                          <SelectItem value="unavailable">不可用</SelectItem>
+                          <SelectItem value="redeemed">已兑换</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </FieldContent>
+                </Field>
+              </FieldGroup>
+
+              <label className="flex items-start gap-3 border border-border/70 bg-muted/20 px-4 py-3 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={tokenCheckDeleteAbnormal}
+                  onChange={(event) =>
+                    setTokenCheckDeleteAbnormal(event.currentTarget.checked)
+                  }
+                />
+                <span>
+                  检测完成后自动删除令牌过期和报错账号；关联兑换记录会同步清理。
+                </span>
+              </label>
+            </div>
+            <DialogFooter className="border-t border-border/70 px-5 py-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setTokenCheckStartDialogOpen(false)}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={tokenCheckSubmitting}>
+                <ActivityIcon data-icon="inline-start" />
+                {tokenCheckSubmitting ? "启动中..." : "开始测活"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={tokenCheckResultDialogOpen}
+        onOpenChange={setTokenCheckResultDialogOpen}
+      >
+        <DialogContent className="max-w-[min(96vw,54rem)] p-0 sm:max-w-[min(96vw,54rem)]">
+          <DialogHeader className="border-b border-border/70 px-5 py-4">
+            <DialogTitle>后台测活任务</DialogTitle>
+            <DialogDescription>
+              查看统计结果，分别下载存活、令牌过期和报错账号。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex max-h-[min(82svh,42rem)] min-h-0 flex-col gap-4 overflow-y-auto px-5 py-4">
+            {tokenCheckJobs.length ? (
+              <Select
+                value={activeTokenCheckJob?.id || undefined}
+                onValueChange={setActiveTokenCheckJobId}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="选择测活任务" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {tokenCheckJobs.map((job) => (
+                      <SelectItem key={job.id} value={job.id}>
+                        {formatDateTime(job.started_at)} · {job.type_name} ·{" "}
+                        {inventoryStatusLabel(job.inventory_status)}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            ) : null}
+
+            {activeTokenCheckJob ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge
+                    variant={
+                      activeTokenCheckJob.status === "completed"
+                        ? "default"
+                        : activeTokenCheckJob.status === "failed"
+                          ? "destructive"
+                          : "secondary"
+                    }
+                  >
+                    {activeTokenCheckJob.status === "completed"
+                      ? "已完成"
+                      : activeTokenCheckJob.status === "failed"
+                        ? "失败"
+                        : "检测中"}
+                  </Badge>
+                  <Badge variant="outline">
+                    {activeTokenCheckJob.type_name}
+                  </Badge>
+                  <Badge variant="outline">
+                    {inventoryStatusLabel(activeTokenCheckJob.inventory_status)}
+                  </Badge>
+                  <Badge variant="outline">
+                    {formatDateTime(activeTokenCheckJob.started_at)}
+                  </Badge>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {[
+                    [
+                      "已检测",
+                      `${activeTokenCheckJob.processed_count}/${activeTokenCheckJob.total_count}`,
+                    ],
+                    ["Token 存活", activeTokenCheckJob.live_count],
+                    ["令牌过期", activeTokenCheckJob.expired_count],
+                    ["AADS / 其他报错", activeTokenCheckJob.error_count],
+                  ].map(([label, value]) => (
+                    <Card
+                      key={String(label)}
+                      size="sm"
+                      className="border border-border/70 bg-background/70"
+                    >
+                      <CardContent className="flex flex-col gap-1 px-4 py-3">
+                        <span className="text-xs text-muted-foreground">
+                          {label}
+                        </span>
+                        <span className="text-xl font-semibold">{value}</span>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+
+                {activeTokenCheckJob.status === "running" ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="h-2 overflow-hidden border border-border/70 bg-muted/50">
+                      <div
+                        className="h-full bg-primary transition-[width]"
+                        style={{
+                          width: `${activeTokenCheckJob.total_count ? Math.round((activeTokenCheckJob.processed_count / activeTokenCheckJob.total_count) * 100) : 0}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      管理页面可以关闭，Worker Thread 会继续检测。
+                    </span>
+                  </div>
+                ) : null}
+
+                {activeTokenCheckJob.status === "failed" ? (
+                  <Alert variant="destructive">
+                    <AlertTitle>检测任务失败</AlertTitle>
+                    <AlertDescription>
+                      {activeTokenCheckJob.error_message || "检测线程异常退出"}
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+
+                {Object.keys(activeTokenCheckJob.error_codes).length ? (
+                  <div className="flex flex-col gap-2 border border-border/70 bg-muted/20 px-4 py-3">
+                    <span className="text-sm font-medium">报错代码统计</span>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(activeTokenCheckJob.error_codes).map(
+                        ([code, count]) => (
+                          <Badge key={code} variant="outline">
+                            {code} · {count}
+                          </Badge>
+                        )
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+
+                {activeTokenCheckJob.deleted_count ? (
+                  <Alert>
+                    <AlertTitle>异常账号已清理</AlertTitle>
+                    <AlertDescription>
+                      已从库存删除 {activeTokenCheckJob.deleted_count}{" "}
+                      个异常账号。
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      void handleDownloadTokenCheck(activeTokenCheckJob, "live")
+                    }
+                    disabled={!activeTokenCheckJob.live_count}
+                  >
+                    <DownloadIcon data-icon="inline-start" />
+                    下载存活账号
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      void handleDownloadTokenCheck(
+                        activeTokenCheckJob,
+                        "expired"
+                      )
+                    }
+                    disabled={!activeTokenCheckJob.expired_count}
+                  >
+                    <DownloadIcon data-icon="inline-start" />
+                    下载令牌过期账号
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      void handleDownloadTokenCheck(
+                        activeTokenCheckJob,
+                        "error"
+                      )
+                    }
+                    disabled={!activeTokenCheckJob.error_count}
+                  >
+                    <DownloadIcon data-icon="inline-start" />
+                    下载报错账号
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() =>
+                      void handleDeleteTokenCheckAbnormal(activeTokenCheckJob)
+                    }
+                    disabled={
+                      activeTokenCheckJob.status !== "completed" ||
+                      tokenCheckDeleting ||
+                      activeTokenCheckJob.expired_count +
+                        activeTokenCheckJob.error_count ===
+                        0 ||
+                      activeTokenCheckJob.deleted_count >=
+                        activeTokenCheckJob.expired_count +
+                          activeTokenCheckJob.error_count
+                    }
+                  >
+                    {tokenCheckDeleting ? "删除中..." : "删除异常账号"}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-muted-foreground">
+                暂无测活任务，请从库存管理启动后台测活。
+              </div>
+            )}
+          </div>
+          <DialogFooter className="border-t border-border/70 px-5 py-4">
+            <Button
+              variant="outline"
+              onClick={() => setTokenCheckResultDialogOpen(false)}
+            >
+              关闭
+            </Button>
+            <Button
+              onClick={() => {
+                setTokenCheckResultDialogOpen(false)
+                openTokenCheckStartDialog()
+              }}
+              disabled={Boolean(runningTokenCheckJob)}
+            >
+              新建测活任务
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={passwordDialogOpen} onOpenChange={setPasswordDialogOpen}>
         <DialogContent className="max-w-[min(96vw,32rem)] p-0 sm:max-w-[min(96vw,32rem)]">
@@ -3228,6 +3830,18 @@ export function AdminConsole() {
                   >
                     <DownloadIcon data-icon="inline-start" />
                     下载 TXT
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() =>
+                      void handleRollbackCode(
+                        recordDetail.code_id,
+                        recordDetail.code
+                      )
+                    }
+                  >
+                    回退并销毁卡密
                   </Button>
                 </div>
                 {hiddenRecordDetailCount > 0 ? (
