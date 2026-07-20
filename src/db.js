@@ -1594,92 +1594,27 @@ export function isRedeemAccessExpired(redeemedAt, now = Date.now()) {
 
 export function purgeExpiredRedeemDataByCodeId(codeId, now = Date.now()) {
   const targetId = Number(codeId);
-  const tx = db.transaction((id, currentTime) => {
-    const code = db
-      .prepare(
-        "SELECT id, code, status, redeemed_at, data_deleted_at FROM redeem_codes WHERE id = ? LIMIT 1",
-      )
-      .get(id);
-    if (
-      !code ||
-      code.status !== "redeemed" ||
-      !isRedeemAccessExpired(code.redeemed_at, currentTime)
-    ) {
-      return null;
-    }
+  const code = db
+    .prepare(
+      "SELECT id, code, status, redeemed_at, data_deleted_at FROM redeem_codes WHERE id = ? LIMIT 1",
+    )
+    .get(targetId);
+  if (
+    !code ||
+    code.status !== "redeemed" ||
+    !isRedeemAccessExpired(code.redeemed_at, now)
+  ) {
+    return null;
+  }
 
-    if (code.data_deleted_at) {
-      return {
-        code_id: id,
-        code: code.code,
-        deleted_inventory_count: 0,
-        deleted_record_count: 0,
-        already_deleted: true,
-      };
-    }
-
-    const inventoryIds = db
-      .prepare(
-        `
-          SELECT inventory_id AS id FROM redeem_records WHERE code_id = ?
-          UNION
-          SELECT id FROM redeem_inventory WHERE redeemed_code_id = ?
-        `,
-      )
-      .all(id, id)
-      .map((row) => Number(row.id));
-    const scrubTokenCheckResult = db.prepare(
-      `
-        UPDATE token_check_results
-        SET email = '', serialized_value = ''
-        WHERE inventory_id = ?
-      `,
-    );
-    for (const inventoryId of inventoryIds) {
-      scrubTokenCheckResult.run(inventoryId);
-    }
-    const deletedRecordCount = db
-      .prepare("DELETE FROM redeem_records WHERE code_id = ?")
-      .run(id).changes;
-    let deletedInventoryCount = db
-      .prepare("DELETE FROM redeem_inventory WHERE redeemed_code_id = ?")
-      .run(id).changes;
-
-    const remainingIds = inventoryIds.filter((inventoryId) =>
-      db
-        .prepare("SELECT 1 FROM redeem_inventory WHERE id = ? LIMIT 1")
-        .get(inventoryId),
-    );
-    const deleteInventory = db.prepare(
-      "DELETE FROM redeem_inventory WHERE id = ?",
-    );
-    for (const inventoryId of remainingIds) {
-      deletedInventoryCount += deleteInventory.run(inventoryId).changes;
-    }
-
-    db.prepare(
-      `
-        UPDATE redeem_codes
-        SET
-          redeemed_inventory_id = NULL,
-          redeemed_quantity = 0,
-          data_deleted_at = CURRENT_TIMESTAMP,
-          data_deleted_reason = 'expired_24h',
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `,
-    ).run(id);
-
-    return {
-      code_id: id,
-      code: code.code,
-      deleted_inventory_count: deletedInventoryCount,
-      deleted_record_count: deletedRecordCount,
-      already_deleted: false,
-    };
-  });
-
-  return tx(targetId, now);
+  return {
+    code_id: targetId,
+    code: code.code,
+    deleted_inventory_count: 0,
+    deleted_record_count: 0,
+    already_deleted: Boolean(code.data_deleted_at),
+    preserved: true,
+  };
 }
 
 export function purgeExpiredRedeemData(now = Date.now()) {
