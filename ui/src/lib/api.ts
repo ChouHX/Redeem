@@ -756,6 +756,7 @@ export async function fetchAdminInventory(
   params: {
     type_id?: string
     status?: string
+    protocol?: MailProtocol
     q?: string
     page?: number
     page_size?: number

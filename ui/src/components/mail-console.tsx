@@ -322,38 +322,9 @@ function protocolLabel(protocol: MailProtocol) {
   return protocol === "graph" ? "Graph" : "IMAP"
 }
 
-function AccountProtocolFilter({
-  value,
-  onValueChange,
-}: {
-  value: "all" | MailProtocol
-  onValueChange: (value: "all" | MailProtocol) => void
-}) {
-  return (
-    <Select value={value} onValueChange={onValueChange}>
-      <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
-        <SelectValue placeholder="取件协议" />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectGroup>
-          <SelectItem value="all">全部协议</SelectItem>
-          {MAIL_PROTOCOLS.map((protocol) => (
-            <SelectItem key={protocol} value={protocol}>
-              {protocolLabel(protocol)}
-            </SelectItem>
-          ))}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
-  )
-}
-
 export function MailConsole() {
   const [redeemCode, setRedeemCode] = useState("")
   const [accountQuery, setAccountQuery] = useState("")
-  const [accountProtocolFilter, setAccountProtocolFilter] = useState<
-    "all" | MailProtocol
-  >("all")
   const [accountsCollapsed, setAccountsCollapsed] = useState(false)
   const [mailboxSheetOpen, setMailboxSheetOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
@@ -377,22 +348,22 @@ export function MailConsole() {
 
   const filteredAccounts = useMemo(() => {
     const query = accountQuery.trim().toLowerCase()
-    return accounts.filter(
-      (account) =>
-        (accountProtocolFilter === "all" ||
-          getAccountProtocols(account).includes(accountProtocolFilter)) &&
-        (!query ||
-          [
-            account.email,
-            account.label,
-            ...getAccountProtocols(account),
-            account.source === "manual" ? "本地" : "兑换码",
-          ]
-            .join(" ")
-            .toLowerCase()
-            .includes(query))
+    if (!query) {
+      return accounts
+    }
+
+    return accounts.filter((account) =>
+      [
+        account.email,
+        account.label,
+        account.mail_protocol,
+        account.source === "manual" ? "本地" : "兑换码",
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
     )
-  }, [accountQuery, accountProtocolFilter, accounts])
+  }, [accountQuery, accounts])
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) || null,
     [accounts, selectedAccountId]
@@ -850,10 +821,6 @@ export function MailConsole() {
                     placeholder="搜索邮箱"
                     className="h-8 text-xs"
                   />
-                  <AccountProtocolFilter
-                    value={accountProtocolFilter}
-                    onValueChange={setAccountProtocolFilter}
-                  />
                   <div className="grid grid-cols-2 gap-1.5">
                     <Button size="sm" onClick={() => setImportDialogOpen(true)}>
                       <PlusIcon data-icon="inline-start" />
@@ -977,10 +944,6 @@ export function MailConsole() {
                       onChange={(event) => setAccountQuery(event.target.value)}
                       placeholder="搜索邮箱"
                       className="h-8 text-xs"
-                    />
-                    <AccountProtocolFilter
-                      value={accountProtocolFilter}
-                      onValueChange={setAccountProtocolFilter}
                     />
                     <div className="grid grid-cols-2 gap-1.5">
                       <Button

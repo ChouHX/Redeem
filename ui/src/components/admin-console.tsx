@@ -157,6 +157,7 @@ type TypeEditorState = TypeFormPayload
 type InventoryFilters = {
   typeId: string
   status: string
+  protocol: "" | MailProtocol
   q: string
   page: number
   pageSize: number
@@ -560,6 +561,7 @@ export function AdminConsole() {
   const [inventoryFilters, setInventoryFilters] = useState<InventoryFilters>({
     typeId: "",
     status: "",
+    protocol: "",
     q: "",
     page: 1,
     pageSize: 10,
@@ -784,6 +786,7 @@ export function AdminConsole() {
       const nextInventory = await fetchAdminInventory(activeToken, {
         type_id: nextFilters.typeId,
         status: nextFilters.status,
+        protocol: nextFilters.protocol || undefined,
         q: nextFilters.q,
         page: nextFilters.page,
         page_size: nextFilters.pageSize,
@@ -2426,7 +2429,7 @@ export function AdminConsole() {
                     void loadInventory(undefined, { page: 1 })
                   }}
                 >
-                  <div className="grid gap-3 md:grid-cols-[1fr_1fr_1.5fr_auto]">
+                  <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_1.5fr_auto]">
                     <Select
                       value={inventoryFilters.typeId || "all"}
                       onValueChange={(value) =>
@@ -2468,6 +2471,27 @@ export function AdminConsole() {
                           <SelectItem value="available">可用</SelectItem>
                           <SelectItem value="unavailable">不可用</SelectItem>
                           <SelectItem value="redeemed">已兑换</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={inventoryFilters.protocol || "all"}
+                      onValueChange={(value) =>
+                        setInventoryFilters((current) => ({
+                          ...current,
+                          protocol:
+                            value === "all" ? "" : (value as MailProtocol),
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="全部取件协议" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="all">全部取件协议</SelectItem>
+                          <SelectItem value="imap">IMAP</SelectItem>
+                          <SelectItem value="graph">Graph</SelectItem>
                         </SelectGroup>
                       </SelectContent>
                     </Select>

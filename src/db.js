@@ -1077,6 +1077,7 @@ export function getRedeemAdminOverview() {
 export function getRedeemInventoryPaged({
   type_id = "",
   status = "",
+  protocol = "",
   q = "",
   page = 1,
   page_size = 10,
@@ -1098,6 +1099,17 @@ export function getRedeemInventoryPaged({
   ) {
     conditions.push("inventory.status = ?");
     params.push(status);
+  }
+
+  if (protocol === "imap" || protocol === "graph") {
+    conditions.push(
+      `EXISTS (
+        SELECT 1
+        FROM json_each(inventory.pickup_protocols)
+        WHERE value = ?
+      )`,
+    );
+    params.push(protocol);
   }
 
   if (q) {

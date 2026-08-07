@@ -1242,6 +1242,7 @@ app.get("/api/redeem/admin/inventory", requireAdmin, (req, res) => {
   const result = getRedeemInventoryPaged({
     type_id: req.query.type_id,
     status: String(req.query.status || ""),
+    protocol: String(req.query.protocol || ""),
     q: String(req.query.q || ""),
     page: parseBoundedInt(req.query.page, 1, { min: 1, max: 100000 }),
     page_size: parseBoundedInt(req.query.page_size, 10, { min: 1, max: 100 }),
