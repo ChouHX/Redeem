@@ -4,6 +4,7 @@ import {
   CheckIcon,
   CopyIcon,
   DownloadIcon,
+  FileUpIcon,
   InboxIcon,
   Loader2Icon,
   MailIcon,
@@ -321,9 +322,38 @@ function protocolLabel(protocol: MailProtocol) {
   return protocol === "graph" ? "Graph" : "IMAP"
 }
 
+function AccountProtocolFilter({
+  value,
+  onValueChange,
+}: {
+  value: "all" | MailProtocol
+  onValueChange: (value: "all" | MailProtocol) => void
+}) {
+  return (
+    <Select value={value} onValueChange={onValueChange}>
+      <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
+        <SelectValue placeholder="取件协议" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          <SelectItem value="all">全部协议</SelectItem>
+          {MAIL_PROTOCOLS.map((protocol) => (
+            <SelectItem key={protocol} value={protocol}>
+              {protocolLabel(protocol)}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  )
+}
+
 export function MailConsole() {
   const [redeemCode, setRedeemCode] = useState("")
   const [accountQuery, setAccountQuery] = useState("")
+  const [accountProtocolFilter, setAccountProtocolFilter] = useState<
+    "all" | MailProtocol
+  >("all")
   const [accountsCollapsed, setAccountsCollapsed] = useState(false)
   const [mailboxSheetOpen, setMailboxSheetOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
@@ -347,22 +377,22 @@ export function MailConsole() {
 
   const filteredAccounts = useMemo(() => {
     const query = accountQuery.trim().toLowerCase()
-    if (!query) {
-      return accounts
-    }
-
-    return accounts.filter((account) =>
-      [
-        account.email,
-        account.label,
-        account.mail_protocol,
-        account.source === "manual" ? "本地" : "兑换码",
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(query)
+    return accounts.filter(
+      (account) =>
+        (accountProtocolFilter === "all" ||
+          getAccountProtocols(account).includes(accountProtocolFilter)) &&
+        (!query ||
+          [
+            account.email,
+            account.label,
+            ...getAccountProtocols(account),
+            account.source === "manual" ? "本地" : "兑换码",
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(query))
     )
-  }, [accountQuery, accounts])
+  }, [accountQuery, accountProtocolFilter, accounts])
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) || null,
     [accounts, selectedAccountId]
@@ -606,6 +636,25 @@ export function MailConsole() {
     )
   }
 
+  function importAccountsFromFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ""
+    if (!file) {
+      return
+    }
+
+    file
+      .text()
+      .then((text) => {
+        setManualText(text)
+        setImportMode("manual")
+        notify("文件已载入", `已读取 ${file.name}，请确认内容后保存。`)
+      })
+      .catch(() => {
+        notify("文件读取失败", "无法读取该文件，请重试。", "destructive")
+      })
+  }
+
   async function fetchAccount(account: MailAccount | null) {
     if (!account) {
       notify("请选择账号", "选择一个邮箱后再取件。", "destructive")
@@ -801,6 +850,10 @@ export function MailConsole() {
                     placeholder="搜索邮箱"
                     className="h-8 text-xs"
                   />
+                  <AccountProtocolFilter
+                    value={accountProtocolFilter}
+                    onValueChange={setAccountProtocolFilter}
+                  />
                   <div className="grid grid-cols-2 gap-1.5">
                     <Button size="sm" onClick={() => setImportDialogOpen(true)}>
                       <PlusIcon data-icon="inline-start" />
@@ -925,6 +978,10 @@ export function MailConsole() {
                       placeholder="搜索邮箱"
                       className="h-8 text-xs"
                     />
+                    <AccountProtocolFilter
+                      value={accountProtocolFilter}
+                      onValueChange={setAccountProtocolFilter}
+                    />
                     <div className="grid grid-cols-2 gap-1.5">
                       <Button
                         size="sm"
@@ -953,7 +1010,13 @@ export function MailConsole() {
                 accountsCollapsed ? "p-1.5" : "p-2"
               )}
             >
-              {accountsCollapsed ? (
+              {loadingAccounts ? (
+                <div className="flex flex-col gap-1">
+                  {Array.from({ length: 7 }).map((_, index) => (
+                    <Skeleton key={index} className="h-8 w-full" />
+                  ))}
+                </div>
+              ) : accountsCollapsed ? (
                 <div className="flex flex-col items-center gap-1.5">
                   {filteredAccounts.map((account) => {
                     const checked = selectedAccountId === account.id
@@ -1368,10 +1431,22 @@ export function MailConsole() {
                           spellCheck={false}
                           className="[field-sizing:fixed] h-32 max-h-48 min-h-32 w-full max-w-full resize-y overflow-auto font-mono leading-5 whitespace-pre"
                         />
-                        <p className="text-xs text-muted-foreground">
-                          只支持 用户名----密码----clientid----refreshtoken
-                          格式，一行一个账号。
-                        </p>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs text-muted-foreground">
+                            只支持 用户名----密码----clientid----refreshtoken
+                            格式，一行一个账号。
+                          </p>
+                          <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-medium text-primary hover:underline">
+                            <FileUpIcon className="size-3.5" />
+                            从文件导入
+                            <input
+                              type="file"
+                              accept=".txt,.csv,text/plain,text/csv"
+                              className="sr-only"
+                              onChange={importAccountsFromFile}
+                            />
+                          </label>
+                        </div>
                       </FieldContent>
                     </Field>
                     <DialogFooter className="px-0">
