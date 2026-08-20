@@ -53,14 +53,6 @@ export const REDEEM_ACCESS_TTL_MS = Math.max(
   60 * 1000,
   Number(process.env.REDEEM_ACCESS_TTL_MS) || 24 * 60 * 60 * 1000
 );
-export const TOKEN_CHECK_CONCURRENCY = Math.max(
-  1,
-  Number(process.env.TOKEN_CHECK_CONCURRENCY) || 6
-);
-export const TOKEN_CHECK_TIMEOUT_MS = Math.max(
-  1000,
-  Number(process.env.TOKEN_CHECK_TIMEOUT_MS) || 15000
-);
 export const IMAP_CONNECTION_TIMEOUT = Number(
   process.env.IMAP_CONNECTION_TIMEOUT || 15000
 );

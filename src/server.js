@@ -1,7 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { Worker } from "node:worker_threads";
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -12,29 +10,20 @@ import {
   FRONTEND_DIST_DIR,
   GEMINI_PRO_API_BASE,
   GEMINI_PRO_API_TIMEOUT_MS,
-  GRAPH_OAUTH_SCOPE,
   HOST,
-  IMAP_OAUTH_SCOPE,
   PORT,
-  TOKEN_CHECK_CONCURRENCY,
-  TOKEN_CHECK_TIMEOUT_MS,
-  TOKEN_URL,
 } from "./config.js";
 import {
   db,
   closeDb,
-  completeTokenCheckJob,
   createRedeemCodes,
   createRedeemEmailType,
-  createTokenCheckJob,
   deleteRedeemCode,
   deleteRedeemCodeBatch,
   deleteRedeemEmailType,
   deleteRedeemInventory,
   deleteRedeemInventoryBatch,
   ensureAccountsLoaded,
-  failInterruptedTokenCheckJobs,
-  failTokenCheckJob,
   getRedeemCodeByCode,
   getRedeemCodesByIds,
   getRedeemCodesForExport,
@@ -50,14 +39,8 @@ import {
   getRedeemRecordsPaged,
   getSystemConfig,
   getSystemConfigValue,
-  getTokenCheckCandidates,
-  getTokenCheckJob,
-  getTokenCheckResultLines,
   importRedeemInventory,
   isRedeemAccessExpired,
-  listTokenCheckJobs,
-  appendTokenCheckResult,
-  deleteTokenCheckAbnormalInventory,
   redeemByCode,
   rollbackRedeemCode,
   setSystemConfigValue,
@@ -68,7 +51,6 @@ import {
   updateRedeemInventoryBatch,
   updateRedeemInventoryStatus,
   updateRedeemInventoryPayload,
-  updateRedeemInventoryRefreshToken,
 } from "./db.js";
 import { getAdminToken, requireAdmin, verifyAdminToken } from "./auth.js";
 import {
@@ -130,108 +112,6 @@ app.use(cors());
 app.use(express.json({ limit: "4mb" }));
 
 ensureAccountsLoaded();
-failInterruptedTokenCheckJobs();
-
-const activeTokenCheckWorkers = new Map();
-
-function finalizeTokenCheckJob(jobId) {
-  const state = activeTokenCheckWorkers.get(jobId);
-  if (state?.finished) {
-    return getTokenCheckJob(jobId);
-  }
-  if (state) {
-    state.finished = true;
-  }
-
-  const job = getTokenCheckJob(jobId);
-  const deletedCount = job?.delete_abnormal
-    ? deleteTokenCheckAbnormalInventory(jobId)
-    : 0;
-  const completed = completeTokenCheckJob(jobId, {
-    deleted_count: deletedCount,
-  });
-  activeTokenCheckWorkers.delete(jobId);
-  logger.info("token_check_completed", {
-    jobId,
-    total: completed?.total_count || 0,
-    live: completed?.live_count || 0,
-    expired: completed?.expired_count || 0,
-    error: completed?.error_count || 0,
-    deleted: deletedCount,
-  });
-  return completed;
-}
-
-function failActiveTokenCheckJob(jobId, error) {
-  const state = activeTokenCheckWorkers.get(jobId);
-  if (state?.finished) {
-    return getTokenCheckJob(jobId);
-  }
-  if (state) {
-    state.finished = true;
-  }
-  activeTokenCheckWorkers.delete(jobId);
-  const message = String(error?.message || error || "Token 检测线程异常");
-  logger.error("token_check_failed", { jobId, error });
-  return failTokenCheckJob(jobId, message);
-}
-
-function startTokenCheckWorker(job, candidates) {
-  const worker = new Worker(
-    new URL("./token-check-worker.js", import.meta.url),
-    {
-      workerData: {
-        candidates,
-        token_url: TOKEN_URL,
-        imap_scope: IMAP_OAUTH_SCOPE,
-        graph_scope: GRAPH_OAUTH_SCOPE,
-        concurrency: TOKEN_CHECK_CONCURRENCY,
-        timeout_ms: TOKEN_CHECK_TIMEOUT_MS,
-      },
-    },
-  );
-  const state = { worker, finished: false };
-  activeTokenCheckWorkers.set(job.id, state);
-
-  worker.on("message", (message) => {
-    if (message?.type === "result") {
-      const result = message.result || {};
-      if (result.new_refresh_token) {
-        try {
-          updateRedeemInventoryRefreshToken(
-            result.inventory_id,
-            result.new_refresh_token,
-          );
-        } catch (error) {
-          logger.warn("token_check_refresh_token_persist_failed", {
-            jobId: job.id,
-            inventoryId: result.inventory_id,
-            error,
-          });
-        }
-      }
-      appendTokenCheckResult(job.id, result);
-      return;
-    }
-
-    if (message?.type === "done") {
-      finalizeTokenCheckJob(job.id);
-      return;
-    }
-
-    if (message?.type === "fatal") {
-      failActiveTokenCheckJob(job.id, message.message);
-    }
-  });
-  worker.on("error", (error) => failActiveTokenCheckJob(job.id, error));
-  worker.on("exit", (code) => {
-    if (!state.finished && code !== 0) {
-      failActiveTokenCheckJob(job.id, `Token 检测线程退出，代码 ${code}`);
-    } else if (!state.finished) {
-      finalizeTokenCheckJob(job.id);
-    }
-  });
-}
 
 function ensureRedeemDataAvailable(codeInfo, res) {
   if (!codeInfo || codeInfo.status !== "redeemed") {
@@ -1329,109 +1209,6 @@ app.post(
   },
 );
 
-app.post("/api/redeem/admin/token-checks", requireAdmin, (req, res) => {
-  if (activeTokenCheckWorkers.size > 0) {
-    res.status(409).json(fail("已有后台测活任务正在运行，请等待完成"));
-    return;
-  }
-
-  const typeId = Number(req.body?.type_id);
-  const inventoryStatus = String(req.body?.inventory_status || "").trim();
-  if (!Number.isInteger(typeId) || typeId < 1) {
-    res.status(400).json(fail("请选择检测分类"));
-    return;
-  }
-  if (!["available", "unavailable", "redeemed"].includes(inventoryStatus)) {
-    res.status(400).json(fail("请选择账号可用状态"));
-    return;
-  }
-
-  try {
-    const candidates = getTokenCheckCandidates({
-      type_id: typeId,
-      status: inventoryStatus,
-    });
-    if (!candidates.length) {
-      res.status(404).json(fail("当前分类和状态下没有可检测账号"));
-      return;
-    }
-
-    const job = createTokenCheckJob({
-      id: randomUUID(),
-      type_id: typeId,
-      inventory_status: inventoryStatus,
-      delete_abnormal: parseBoolean(req.body?.delete_abnormal, false),
-      total_count: candidates.length,
-    });
-    startTokenCheckWorker(job, candidates);
-    res
-      .status(202)
-      .json(ok(job, `后台测活已启动，共 ${candidates.length} 个账号`));
-  } catch (error) {
-    res.status(400).json(fail(error.message || "后台测活启动失败"));
-  }
-});
-
-app.get("/api/redeem/admin/token-checks", requireAdmin, (req, res) => {
-  const items = listTokenCheckJobs({
-    limit: parseBoundedInt(req.query.limit, 20, { min: 1, max: 100 }),
-  });
-  res.json(ok({ items }, `共 ${items.length} 个测活任务`));
-});
-
-app.get("/api/redeem/admin/token-checks/:jobId", requireAdmin, (req, res) => {
-  const job = getTokenCheckJob(req.params.jobId);
-  if (!job) {
-    res.status(404).json(fail("测活任务不存在"));
-    return;
-  }
-  res.json(ok(job, "测活任务获取成功"));
-});
-
-app.get(
-  "/api/redeem/admin/token-checks/:jobId/download/:outcome",
-  requireAdmin,
-  (req, res) => {
-    const job = getTokenCheckJob(req.params.jobId);
-    if (!job) {
-      res.status(404).json(fail("测活任务不存在"));
-      return;
-    }
-    const outcome = String(req.params.outcome || "");
-    if (!["live", "expired", "error"].includes(outcome)) {
-      res.status(400).json(fail("下载分类仅支持 live、expired 或 error"));
-      return;
-    }
-
-    const lines = getTokenCheckResultLines(job.id, outcome);
-    const filename = `token_check_${outcome}_${job.id.slice(0, 8)}.txt`;
-    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
-    res.type("text/plain; charset=utf-8").send(lines.join("\n"));
-  },
-);
-
-app.post(
-  "/api/redeem/admin/token-checks/:jobId/delete-abnormal",
-  requireAdmin,
-  (req, res) => {
-    const job = getTokenCheckJob(req.params.jobId);
-    if (!job) {
-      res.status(404).json(fail("测活任务不存在"));
-      return;
-    }
-    if (job.status !== "completed") {
-      res.status(409).json(fail("测活任务完成后才能删除异常账号"));
-      return;
-    }
-
-    const deletedCount = deleteTokenCheckAbnormalInventory(job.id);
-    const updated = completeTokenCheckJob(job.id, {
-      deleted_count: job.deleted_count + deletedCount,
-    });
-    res.json(ok(updated, `已删除 ${deletedCount} 个异常账号`));
-  },
-);
-
 app.delete(
   "/api/redeem/admin/inventory/:inventoryId",
   requireAdmin,
@@ -1837,9 +1614,6 @@ app.listen(PORT, HOST, () => {
 
 process.on("SIGINT", () => {
   clearInterval(redeemCleanupTimer);
-  for (const { worker } of activeTokenCheckWorkers.values()) {
-    void worker.terminate();
-  }
   closeDb();
   process.exit(0);
 });
