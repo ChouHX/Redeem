@@ -14,6 +14,7 @@ __pycache__/
 *.db-shm
 *.db-wal
 data/
+server_data/
 
 release/*.tar.gz
 screenshots/

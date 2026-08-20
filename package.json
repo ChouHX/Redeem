@@ -9,6 +9,7 @@
     "dev:server": "node --watch src/server.js",
     "dev:ui": "pnpm --filter ui run dev",
     "package:docker": "bash ./scripts/package-docker-bundle.sh",
+    "check:restored-accounts": "node scripts/check-restored-accounts.js",
     "ui:dev": "pnpm --filter ui run dev",
     "ui:build": "pnpm --filter ui run build",
     "start": "node src/server.js",

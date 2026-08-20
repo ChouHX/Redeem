@@ -118,12 +118,52 @@ CREATE INDEX IF NOT EXISTS idx_account_tags_email ON account_tags(email);
 CREATE INDEX IF NOT EXISTS idx_email_cache_email ON email_cache(email);
 CREATE INDEX IF NOT EXISTS idx_redeem_types_active ON redeem_email_types(is_active);
 CREATE INDEX IF NOT EXISTS idx_redeem_inventory_type_status ON redeem_inventory(type_id, status);
-CREATE INDEX IF NOT EXISTS idx_redeem_inventory_search ON redeem_inventory(search_text);
 CREATE INDEX IF NOT EXISTS idx_redeem_codes_type_status ON redeem_codes(type_id, status);
 CREATE INDEX IF NOT EXISTS idx_redeem_codes_normalized_code ON redeem_codes(normalized_code);
 CREATE INDEX IF NOT EXISTS idx_redeem_records_type_id ON redeem_records(type_id);
 CREATE INDEX IF NOT EXISTS idx_redeem_records_code_id ON redeem_records(code_id);
 `);
+
+const shouldRebuildInventorySearch = !db
+  .prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redeem_inventory_fts' LIMIT 1",
+  )
+  .get();
+
+db.exec(`
+DROP INDEX IF EXISTS idx_redeem_inventory_search;
+CREATE VIRTUAL TABLE IF NOT EXISTS redeem_inventory_fts USING fts5(
+  search_text,
+  content = 'redeem_inventory',
+  content_rowid = 'id',
+  tokenize = 'trigram',
+  detail = 'none',
+  columnsize = 0
+);
+CREATE TRIGGER IF NOT EXISTS redeem_inventory_fts_insert
+AFTER INSERT ON redeem_inventory BEGIN
+  INSERT INTO redeem_inventory_fts(rowid, search_text)
+  VALUES (new.id, new.search_text);
+END;
+CREATE TRIGGER IF NOT EXISTS redeem_inventory_fts_delete
+AFTER DELETE ON redeem_inventory BEGIN
+  INSERT INTO redeem_inventory_fts(redeem_inventory_fts, rowid, search_text)
+  VALUES ('delete', old.id, old.search_text);
+END;
+CREATE TRIGGER IF NOT EXISTS redeem_inventory_fts_update
+AFTER UPDATE OF search_text ON redeem_inventory BEGIN
+  INSERT INTO redeem_inventory_fts(redeem_inventory_fts, rowid, search_text)
+  VALUES ('delete', old.id, old.search_text);
+  INSERT INTO redeem_inventory_fts(rowid, search_text)
+  VALUES (new.id, new.search_text);
+END;
+`);
+
+if (shouldRebuildInventorySearch) {
+  db.prepare(
+    "INSERT INTO redeem_inventory_fts(redeem_inventory_fts) VALUES ('rebuild')",
+  ).run();
+}
 
 function ensureColumn(tableName, columnName, columnDefinition) {
   const exists = db
@@ -1081,8 +1121,19 @@ export function getRedeemInventoryPaged({
   }
 
   if (q) {
-    conditions.push("inventory.search_text LIKE ?");
-    params.push(`%${String(q).trim().toLowerCase()}%`);
+    const normalizedQuery = String(q).trim().toLowerCase();
+    if (Array.from(normalizedQuery).length >= 3) {
+      conditions.push(
+        `inventory.id IN (
+          SELECT rowid
+          FROM redeem_inventory_fts
+          WHERE search_text LIKE ?
+        )`,
+      );
+    } else {
+      conditions.push("inventory.search_text LIKE ?");
+    }
+    params.push(`%${normalizedQuery}%`);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";

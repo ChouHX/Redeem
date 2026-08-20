@@ -95,6 +95,47 @@ test("rolling back a redeemed code destroys it and restores inventory", () => {
   assert.equal(restored.redeemed_at, null);
 });
 
+test("inventory trigram search stays synchronized after writes", () => {
+  const type = db.ensureDefaultRedeemEmailType();
+  const parsed = parseInventoryImportText({
+    text: "fts-sync@example.com----pass----client----refresh-original-marker",
+    field_schema: type.field_schema,
+    import_delimiter: type.import_delimiter,
+  });
+  db.importRedeemInventory({ type_id: type.id, items: parsed.items });
+
+  const imported = db.getRedeemInventoryPaged({
+    type_id: type.id,
+    q: "sync@example",
+    page_size: 10,
+  });
+  assert.equal(imported.total, 1);
+  assert.equal(
+    imported.items[0].payload.raw_line,
+    parsed.items[0].payload.raw_line,
+  );
+
+  const inventoryId = imported.items[0].id;
+  assert.equal(
+    db.updateRedeemInventoryRefreshToken(inventoryId, "refresh-updated-marker"),
+    true,
+  );
+  assert.equal(
+    db.getRedeemInventoryPaged({ q: "original-marker", page_size: 10 }).total,
+    0,
+  );
+  assert.equal(
+    db.getRedeemInventoryPaged({ q: "updated-marker", page_size: 10 }).total,
+    1,
+  );
+
+  assert.equal(db.deleteRedeemInventory(inventoryId), true);
+  assert.equal(
+    db.getRedeemInventoryPaged({ q: "sync@example", page_size: 10 }).total,
+    0,
+  );
+});
+
 test("expired redemption access never deletes inventory or history", () => {
   const type = db.ensureDefaultRedeemEmailType();
   const parsed = parseInventoryImportText({
