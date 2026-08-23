@@ -2395,12 +2395,14 @@ export function redeemByCode({
     }
 
     const redeemedAt = nowTimestamp();
+    // pickup_protocols records what the account itself can be picked up with,
+    // so redemption must not narrow it to the protocol this batch was drawn
+    // from: the mail console fetches through every protocol the row allows.
     const updateInventoryStmt = db.prepare(
       `
         UPDATE redeem_inventory
         SET
           status = 'redeemed',
-          pickup_protocols = ?,
           redeemed_code_id = ?,
           redeemed_at = ?,
           updated_at = CURRENT_TIMESTAMP
@@ -2428,7 +2430,6 @@ export function redeemByCode({
 
     for (const inventoryRow of inventoryRows) {
       const inventoryUpdate = updateInventoryStmt.run(
-        JSON.stringify([selectedProtocol]),
         codeRow.id,
         redeemedAt,
         inventoryRow.id,
@@ -2454,7 +2455,6 @@ export function redeemByCode({
       inventories.push(
         rowToRedeemInventory({
           ...inventoryRow,
-          pickup_protocols: JSON.stringify([selectedProtocol]),
           type_name: codeRow.type_name,
           type_slug: codeRow.type_slug,
           field_schema: codeRow.field_schema,
