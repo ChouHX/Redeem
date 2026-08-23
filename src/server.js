@@ -39,6 +39,8 @@ import {
   getRedeemRecordsPaged,
   getSystemConfig,
   getSystemConfigValue,
+  getRedeemAccessExpiresAt,
+  getRedeemAccessTtlHours,
   importRedeemInventory,
   isRedeemAccessExpired,
   redeemByCode,
@@ -67,6 +69,7 @@ import {
   parseMailboxAccountLine,
   formatRedeemedInventory,
   normalizeMailProtocol,
+  normalizeMailProtocols,
   normalizeRedeemEmailTypeInput,
   parseInventoryImportText,
 } from "./redeem.js";
@@ -851,6 +854,14 @@ app.post("/api/redeem/exchange", (req, res) => {
           redeemed_count: result.redeemed_count,
           redeemed_at: result.code.redeemed_at,
           code: result.code.code,
+          access_expires_at: getRedeemAccessExpiresAt(result.code.redeemed_at),
+          access_ttl_hours: getRedeemAccessTtlHours(),
+          mail_protocols: normalizeMailProtocols(
+            result.inventories.flatMap(
+              (inventory) => inventory.mail_protocols || [],
+            ),
+            [result.type?.mail_protocol || "imap"],
+          ),
           items: result.inventories.map((inventory) =>
             formatRedeemedInventory(
               { ...result.type, mail_protocols: inventory.mail_protocols },

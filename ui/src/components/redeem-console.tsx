@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import {
+  ClockIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -13,6 +14,7 @@ import {
   SparklesIcon,
   TicketIcon,
   Trash2Icon,
+  TriangleAlertIcon,
   WrenchIcon,
 } from "lucide-react"
 
@@ -22,6 +24,7 @@ import {
   type FaqConfig,
   type GeminiProTaskItem,
   type GeminiProTasksResult,
+  type MailProtocol,
   type RedeemCatalog,
   type RedeemExchangeResult,
   type RedeemOrderQueryResult,
@@ -92,8 +95,55 @@ type ResultLineItem = {
 
 const MAX_VISIBLE_RESULT_ITEMS = 10
 
+const MAIL_PROTOCOL_INFO: Record<
+  MailProtocol,
+  { label: string; hint: string }
+> = {
+  imap: {
+    label: "IMAP",
+    hint: "可用标准 IMAP 客户端或本站「用户收件」取件。",
+  },
+  graph: {
+    label: "Graph",
+    hint: "可用 Microsoft Graph API 取件，读取速度通常更快。",
+  },
+}
+
 function buildResultText(items: ResultLineItem[]) {
   return items.map((item) => item.formatted_line).join("\n")
+}
+
+function collectMailProtocols(
+  result: RedeemExchangeResult | null
+): MailProtocol[] {
+  if (!result) {
+    return []
+  }
+
+  const collected = [
+    ...(result.mail_protocols || []),
+    ...(result.type?.mail_protocols || []),
+    ...result.items.flatMap((item) => [
+      ...(item.mail_protocols || []),
+      ...(item.type?.mail_protocols || []),
+    ]),
+  ].filter((protocol): protocol is MailProtocol => Boolean(protocol))
+
+  return (["imap", "graph"] as MailProtocol[]).filter((protocol) =>
+    collected.includes(protocol)
+  )
+}
+
+function downloadResultItems(
+  items: ResultLineItem[],
+  code: string,
+  downloadPrefix: string
+) {
+  downloadTextFile(
+    buildResultText(items),
+    createTextExportFilename(downloadPrefix, code)
+  )
+  notify("下载成功", `已下载 ${items.length} 条结果内容。`)
 }
 
 const GEMINIPRO_STATUS_MAP: Record<
@@ -144,8 +194,7 @@ function ResultOutputCard({
   const fullText = buildResultText(items)
 
   function handleDownload() {
-    downloadTextFile(fullText, createTextExportFilename(downloadPrefix, code))
-    notify("下载成功", `已下载 ${itemCount} 条结果内容。`)
+    downloadResultItems(items, code, downloadPrefix)
   }
 
   return (
@@ -226,6 +275,7 @@ export function RedeemConsole() {
   const [loading, setLoading] = useState(true)
   const [exchangeSubmitting, setExchangeSubmitting] = useState(false)
   const [querySubmitting, setQuerySubmitting] = useState(false)
+  const [redeemReminderOpen, setRedeemReminderOpen] = useState(false)
 
   const [geminiProCode, setGeminiProCode] = useState("")
   const [geminiProSubmitting, setGeminiProSubmitting] = useState(false)
@@ -314,10 +364,12 @@ export function RedeemConsole() {
       setExchangeResult(payload.data)
       setExchangeCode("")
       setQueryCode(payload.data.code)
+      setRedeemReminderOpen(true)
       notify("兑换成功", "邮箱数据已发放，请尽快复制保存。")
       await loadCatalog()
     } catch (error) {
       setExchangeResult(null)
+      setRedeemReminderOpen(false)
       notify(
         error instanceof ApiError && error.status === 410
           ? "账号信息已删除"
@@ -489,6 +541,23 @@ export function RedeemConsole() {
     setGeminiProSubmitDialogOpen(true)
   }
 
+  const redeemProtocols = collectMailProtocols(exchangeResult)
+  const redeemRetentionHours = exchangeResult?.access_ttl_hours || 24
+  const redeemExpiresAt = exchangeResult?.access_expires_at || ""
+
+  function handleReminderDownload() {
+    if (!exchangeResult) {
+      return
+    }
+
+    downloadResultItems(
+      exchangeResult.items,
+      exchangeResult.code,
+      "redeem_result"
+    )
+    setRedeemReminderOpen(false)
+  }
+
   return (
     <main className="page-shell page-shell-redeem relative min-h-svh overflow-hidden">
       <div className="redeem-noise pointer-events-none absolute inset-0 opacity-70" />
@@ -644,17 +713,49 @@ export function RedeemConsole() {
               </Card>
 
               {exchangeResult ? (
-                <ResultOutputCard
-                  badgeLabel="已发放"
-                  title="兑换结果"
-                  description="结果按整行格式展示，可直接复制或下载为 TXT。"
-                  code={exchangeResult.code}
-                  typeName={exchangeResult.type.name}
-                  itemCount={exchangeResult.redeemed_count}
-                  redeemedAt={exchangeResult.redeemed_at}
-                  items={exchangeResult.items}
-                  downloadPrefix="redeem_result"
-                />
+                <>
+                  <Alert>
+                    <ClockIcon />
+                    <AlertTitle>
+                      取件协议
+                      {redeemProtocols.length
+                        ? `：${redeemProtocols
+                            .map(
+                              (protocol) => MAIL_PROTOCOL_INFO[protocol].label
+                            )
+                            .join(" / ")}`
+                        : "未标注"}
+                      ，数据 {redeemRetentionHours} 小时后自动删除
+                    </AlertTitle>
+                    <AlertDescription>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        {redeemExpiresAt ? (
+                          <span>
+                            删除时间：{formatDateTime(redeemExpiresAt)}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="underline underline-offset-3 hover:text-foreground"
+                          onClick={() => setRedeemReminderOpen(true)}
+                        >
+                          查看完整提醒
+                        </button>
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                  <ResultOutputCard
+                    badgeLabel="已发放"
+                    title="兑换结果"
+                    description="结果按整行格式展示，可直接复制或下载为 TXT。"
+                    code={exchangeResult.code}
+                    typeName={exchangeResult.type.name}
+                    itemCount={exchangeResult.redeemed_count}
+                    redeemedAt={exchangeResult.redeemed_at}
+                    items={exchangeResult.items}
+                    downloadPrefix="redeem_result"
+                  />
+                </>
               ) : null}
             </TabsContent>
 
@@ -1069,6 +1170,93 @@ export function RedeemConsole() {
           ) : null}
         </section>
       </div>
+
+      <Dialog
+        open={redeemReminderOpen && Boolean(exchangeResult)}
+        onOpenChange={setRedeemReminderOpen}
+      >
+        <DialogContent className="max-w-[min(96vw,34rem)] p-0 sm:max-w-[min(96vw,34rem)]">
+          <DialogHeader className="border-b border-border/70 px-5 py-4">
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheckIcon className="size-4 text-primary" />
+              兑换完成提醒
+            </DialogTitle>
+            <DialogDescription>
+              本次共发放 {exchangeResult?.redeemed_count ?? 0} 条账号数据，请先确认取件方式与保留时间。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex max-h-[min(70svh,32rem)] min-h-0 flex-col gap-4 overflow-y-auto px-5 py-4">
+            <section className="flex flex-col gap-2">
+              <p className="text-xs font-medium text-foreground">
+                本次账号支持的取件协议
+              </p>
+              {redeemProtocols.length ? (
+                <ul className="flex flex-col gap-2">
+                  {redeemProtocols.map((protocol) => (
+                    <li
+                      key={protocol}
+                      className="flex flex-col gap-0.5 border border-border/70 bg-background/60 px-3 py-2 text-xs"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <MailIcon className="size-3.5 shrink-0 text-primary" />
+                        <span className="font-medium text-foreground">
+                          {MAIL_PROTOCOL_INFO[protocol].label}
+                        </span>
+                        <Badge
+                          variant="secondary"
+                          className="h-4 px-1.5 text-[10px]"
+                        >
+                          可用
+                        </Badge>
+                      </div>
+                      <span className="text-muted-foreground">
+                        {MAIL_PROTOCOL_INFO[protocol].hint}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="border border-border/70 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+                  未标注取件协议，默认可尝试 IMAP 方式取件。
+                </p>
+              )}
+            </section>
+
+            <Alert variant="destructive">
+              <TriangleAlertIcon />
+              <AlertTitle>
+                数据将在 {redeemRetentionHours} 小时后自动删除
+              </AlertTitle>
+              <AlertDescription>
+                <div className="flex flex-col gap-1">
+                  {redeemExpiresAt ? (
+                    <span className="flex items-center gap-1.5">
+                      <ClockIcon className="size-3.5 shrink-0" />
+                      删除时间：{formatDateTime(redeemExpiresAt)}
+                    </span>
+                  ) : null}
+                  <span>
+                    到期后在线访问与订单查询将关闭，届时取件需自行导入账号数据。请立即下载或复制保存。
+                  </span>
+                </div>
+              </AlertDescription>
+            </Alert>
+          </div>
+          <DialogFooter className="border-t border-border/70 px-5 py-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRedeemReminderOpen(false)}
+            >
+              稍后手动保存
+            </Button>
+            <Button type="button" onClick={handleReminderDownload}>
+              <DownloadIcon data-icon="inline-start" />
+              立即下载 TXT
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={geminiProNoticesOpen}

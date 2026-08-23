@@ -144,6 +144,9 @@ export type RedeemExchangeResult = {
   redeemed_count: number
   redeemed_at: string
   code: string
+  access_expires_at?: string | null
+  access_ttl_hours?: number
+  mail_protocols?: MailProtocol[]
   type: {
     id: number | null
     slug: string

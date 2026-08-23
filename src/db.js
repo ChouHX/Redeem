@@ -1566,7 +1566,7 @@ export function getMailboxInventoryAccounts({ type_id, status = "" } = {}) {
   return accounts;
 }
 
-export function isRedeemAccessExpired(redeemedAt, now = Date.now()) {
+function parseRedeemedAtTimestamp(redeemedAt) {
   const rawRedeemedAt = String(redeemedAt || "").trim();
   const normalizedRedeemedAt = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
     rawRedeemedAt,
@@ -1574,11 +1574,29 @@ export function isRedeemAccessExpired(redeemedAt, now = Date.now()) {
     ? `${rawRedeemedAt.replace(" ", "T")}Z`
     : rawRedeemedAt;
   const redeemedTimestamp = Date.parse(normalizedRedeemedAt);
-  if (!Number.isFinite(redeemedTimestamp)) {
+  return Number.isFinite(redeemedTimestamp) ? redeemedTimestamp : null;
+}
+
+export function isRedeemAccessExpired(redeemedAt, now = Date.now()) {
+  const redeemedTimestamp = parseRedeemedAtTimestamp(redeemedAt);
+  if (redeemedTimestamp === null) {
     return false;
   }
 
   return redeemedTimestamp + REDEEM_ACCESS_TTL_MS <= Number(now);
+}
+
+export function getRedeemAccessExpiresAt(redeemedAt) {
+  const redeemedTimestamp = parseRedeemedAtTimestamp(redeemedAt);
+  if (redeemedTimestamp === null) {
+    return null;
+  }
+
+  return new Date(redeemedTimestamp + REDEEM_ACCESS_TTL_MS).toISOString();
+}
+
+export function getRedeemAccessTtlHours() {
+  return Math.round((REDEEM_ACCESS_TTL_MS / (60 * 60 * 1000)) * 10) / 10;
 }
 
 export function purgeExpiredRedeemDataByCodeId(codeId, now = Date.now()) {
