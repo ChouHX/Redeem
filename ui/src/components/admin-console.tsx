@@ -36,6 +36,8 @@ import {
   type FaqConfig,
   type FieldSchema,
   type MailProtocol,
+  type CodeSelectionTarget,
+  type InventorySelectionTarget,
   type PagedResult,
   batchUpdateAdminCodes,
   batchDeleteAdminCodes,
@@ -189,6 +191,12 @@ type InventoryBatchEditState = {
 type CodeBatchEditState = {
   typeId: string
   quantity: string
+}
+
+type FilterSelection<T> = {
+  filters: T
+  total: number
+  excludedIds: number[]
 }
 
 const MAX_RECORD_PREVIEW_ITEMS = 10
@@ -507,7 +515,9 @@ export function AdminConsole() {
   const [token, setToken] = useState("")
   const [tokenInput, setTokenInput] = useState("")
   const [authenticated, setAuthenticated] = useState(false)
-  const [checkingAuth, setCheckingAuth] = useState(true)
+  const [checkingAuth, setCheckingAuth] = useState(() =>
+    Boolean(sessionStorage.getItem("admin_token"))
+  )
   const [activeTab, setActiveTab] = useState("inventory")
   const [overview, setOverview] = useState<AdminOverview | null>(null)
   const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
@@ -607,6 +617,10 @@ export function AdminConsole() {
   })
   const [selectedInventoryIds, setSelectedInventoryIds] = useState<number[]>([])
   const [selectedCodeIds, setSelectedCodeIds] = useState<number[]>([])
+  const [filteredInventorySelection, setFilteredInventorySelection] =
+    useState<FilterSelection<InventoryFilters> | null>(null)
+  const [filteredCodeSelection, setFilteredCodeSelection] =
+    useState<FilterSelection<CodeFilters> | null>(null)
   const [passwordForm, setPasswordForm] = useState<PasswordFormState>({
     currentToken: "",
     newToken: "",
@@ -617,6 +631,7 @@ export function AdminConsole() {
   )
   const inventoryImportFileInputRef = useRef<HTMLInputElement | null>(null)
   const tokenRef = useRef("")
+  const lazyTabLoadsRef = useRef(new Set<string>())
 
   const inventoryImportType = types.find(
     (type) => String(type.id) === inventoryImportTypeId
@@ -627,6 +642,65 @@ export function AdminConsole() {
         inventoryImportType.mail_protocol
       )
     : []
+  const selectedInventoryCount = filteredInventorySelection
+    ? Math.max(
+        0,
+        filteredInventorySelection.total -
+          filteredInventorySelection.excludedIds.length
+      )
+    : selectedInventoryIds.length
+  const selectedCodeCount = filteredCodeSelection
+    ? Math.max(
+        0,
+        filteredCodeSelection.total - filteredCodeSelection.excludedIds.length
+      )
+    : selectedCodeIds.length
+
+  function clearInventorySelection() {
+    setSelectedInventoryIds([])
+    setFilteredInventorySelection(null)
+  }
+
+  function clearCodeSelection() {
+    setSelectedCodeIds([])
+    setFilteredCodeSelection(null)
+  }
+
+  function getInventorySelectionTarget(): InventorySelectionTarget {
+    if (filteredInventorySelection) {
+      return {
+        selection: {
+          filters: {
+            type_id: filteredInventorySelection.filters.typeId,
+            status: filteredInventorySelection.filters.status,
+            protocol:
+              filteredInventorySelection.filters.protocol || undefined,
+            q: filteredInventorySelection.filters.q,
+          },
+          exclude_ids: filteredInventorySelection.excludedIds,
+        },
+      }
+    }
+    return { inventory_ids: selectedInventoryIds }
+  }
+
+  function getCodeSelectionTarget(): CodeSelectionTarget {
+    if (filteredCodeSelection) {
+      return {
+        selection: {
+          filters: {
+            type_id: filteredCodeSelection.filters.typeId,
+            status: filteredCodeSelection.filters.status,
+            q: filteredCodeSelection.filters.q,
+            min_quantity: filteredCodeSelection.filters.minQuantity,
+            max_quantity: filteredCodeSelection.filters.maxQuantity,
+          },
+          exclude_ids: filteredCodeSelection.excludedIds,
+        },
+      }
+    }
+    return { code_ids: selectedCodeIds }
+  }
 
   function setDefaultTypeSelections(nextTypes: RedeemType[]) {
     const selectedType =
@@ -675,12 +749,13 @@ export function AdminConsole() {
     setInventory(null)
     setCodes(null)
     setRecords(null)
+    lazyTabLoadsRef.current.clear()
     setGeneratedCodes([])
     setInventoryImportFile(null)
     setInventoryImportProgress(null)
     setInventoryImportPhase(null)
-    setSelectedInventoryIds([])
-    setSelectedCodeIds([])
+    clearInventorySelection()
+    clearCodeSelection()
     showToast("会话已结束", message)
   }
 
@@ -757,6 +832,15 @@ export function AdminConsole() {
       ...inventoryFilters,
       ...overrides,
     }
+    if (
+      filteredInventorySelection &&
+      (filteredInventorySelection.filters.typeId !== nextFilters.typeId ||
+        filteredInventorySelection.filters.status !== nextFilters.status ||
+        filteredInventorySelection.filters.protocol !== nextFilters.protocol ||
+        filteredInventorySelection.filters.q !== nextFilters.q)
+    ) {
+      clearInventorySelection()
+    }
     setInventoryLoading(true)
     try {
       const nextInventory = await fetchAdminInventory(activeToken, {
@@ -787,6 +871,17 @@ export function AdminConsole() {
     const nextFilters = {
       ...codeFilters,
       ...overrides,
+    }
+    if (
+      filteredCodeSelection &&
+      (filteredCodeSelection.filters.typeId !== nextFilters.typeId ||
+        filteredCodeSelection.filters.status !== nextFilters.status ||
+        filteredCodeSelection.filters.q !== nextFilters.q ||
+        filteredCodeSelection.filters.minQuantity !==
+          nextFilters.minQuantity ||
+        filteredCodeSelection.filters.maxQuantity !== nextFilters.maxQuantity)
+    ) {
+      clearCodeSelection()
     }
     setCodesLoading(true)
     try {
@@ -840,12 +935,36 @@ export function AdminConsole() {
   async function refreshDashboard(activeToken = token) {
     await Promise.all([
       loadOverviewAndTypes(activeToken),
-      loadAds(activeToken),
-      loadFaq(activeToken),
-      loadInventory(activeToken),
-      loadCodes(activeToken),
-      loadRecords(activeToken),
+      loadAdminTab(activeTab, activeToken),
     ])
+  }
+
+  function loadAdminTab(tab: string, activeToken = token) {
+    if (tab === "inventory") return loadInventory(activeToken)
+    if (tab === "codes") return loadCodes(activeToken)
+    if (tab === "ads") return loadAds(activeToken)
+    if (tab === "faq") return loadFaq(activeToken)
+    if (tab === "records") return loadRecords(activeToken)
+    return Promise.resolve()
+  }
+
+  function handleActiveTabChange(nextTab: string) {
+    setActiveTab(nextTab)
+    if (!authenticated || !token || lazyTabLoadsRef.current.has(nextTab)) {
+      return
+    }
+
+    const needsLoad =
+      (nextTab === "ads" && !adSlot) ||
+      (nextTab === "faq" && !faq) ||
+      (nextTab === "codes" && !codes) ||
+      (nextTab === "records" && !records)
+    if (!needsLoad) {
+      return
+    }
+
+    lazyTabLoadsRef.current.add(nextTab)
+    void loadAdminTab(nextTab, token)
   }
 
   async function restoreSession(nextToken: string, silent = false) {
@@ -859,7 +978,10 @@ export function AdminConsole() {
       if (!silent) {
         showSuccessToast("登录成功", "后台数据已经刷新完成。")
       }
-      await refreshDashboard(nextToken)
+      await Promise.all([
+        loadOverviewAndTypes(nextToken),
+        loadAdminTab(activeTab, nextToken),
+      ])
     } catch (error) {
       sessionStorage.removeItem("admin_token")
       setAuthenticated(false)
@@ -879,52 +1001,38 @@ export function AdminConsole() {
   useEffect(() => {
     const storedToken = sessionStorage.getItem("admin_token")
     if (!storedToken) {
-      setCheckingAuth(false)
       return
     }
 
+    const controller = new AbortController()
     void (async () => {
       setCheckingAuth(true)
       try {
-        await verifyAdminToken(storedToken)
+        await verifyAdminToken(storedToken, controller.signal)
         const [
           nextOverview,
-          nextAds,
-          nextFaq,
           nextTypes,
           nextInventory,
-          nextCodes,
-          nextRecords,
         ] = await Promise.all([
-          fetchAdminOverview(storedToken),
-          fetchAdminAds(storedToken),
-          fetchAdminFaq(storedToken),
-          fetchAdminTypes(storedToken),
+          fetchAdminOverview(storedToken, controller.signal),
+          fetchAdminTypes(storedToken, true, controller.signal),
           fetchAdminInventory(storedToken, {
             page: 1,
             page_size: 10,
-          }),
-          fetchAdminCodes(storedToken, {
-            page: 1,
-            page_size: 10,
-          }),
-          fetchAdminRecords(storedToken, {
-            page: 1,
-            page_size: 10,
-          }),
+          }, controller.signal),
         ])
+
+        if (controller.signal.aborted) {
+          return
+        }
 
         sessionStorage.setItem("admin_token", storedToken)
         setAuthenticated(true)
         setToken(storedToken)
         setTokenInput(storedToken)
         setOverview(nextOverview)
-        setAdSlot(nextAds)
-        setFaq(nextFaq)
         setTypes(nextTypes)
         setInventory(nextInventory)
-        setCodes(nextCodes)
-        setRecords(nextRecords)
 
         const firstType = nextTypes[0]
         if (firstType) {
@@ -942,13 +1050,20 @@ export function AdminConsole() {
           setGenerateTypeId((current) => current || String(firstType.id))
         }
       } catch {
+        if (controller.signal.aborted) {
+          return
+        }
         sessionStorage.removeItem("admin_token")
         setAuthenticated(false)
         setToken("")
       } finally {
-        setCheckingAuth(false)
+        if (!controller.signal.aborted) {
+          setCheckingAuth(false)
+        }
       }
     })()
+
+    return () => controller.abort()
   }, [])
 
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
@@ -975,7 +1090,7 @@ export function AdminConsole() {
   }
 
   function openInventoryBatchEditDialog() {
-    if (!selectedInventoryIds.length) {
+    if (!selectedInventoryCount) {
       showErrorToast("请先选择库存", "批量编辑前需要至少勾选一条库存记录。")
       return
     }
@@ -988,7 +1103,7 @@ export function AdminConsole() {
   }
 
   function openCodeBatchEditDialog() {
-    if (!selectedCodeIds.length) {
+    if (!selectedCodeCount) {
       showErrorToast("请先选择卡密", "批量编辑前需要至少勾选一个兑换码。")
       return
     }
@@ -1194,8 +1309,8 @@ export function AdminConsole() {
         setRecordDetailDialogOpen(false)
       }
 
-      setSelectedInventoryIds([])
-      setSelectedCodeIds([])
+      clearInventorySelection()
+      clearCodeSelection()
 
       await Promise.all([
         loadOverviewAndTypes(),
@@ -1319,6 +1434,16 @@ export function AdminConsole() {
   }
 
   function toggleSelectedInventory(inventoryId: number, checked: boolean) {
+    if (filteredInventorySelection) {
+      setFilteredInventorySelection((current) => {
+        if (!current) return current
+        const excluded = new Set(current.excludedIds)
+        if (checked) excluded.delete(inventoryId)
+        else excluded.add(inventoryId)
+        return { ...current, excludedIds: Array.from(excluded) }
+      })
+      return
+    }
     setSelectedInventoryIds((current) => {
       const next = new Set(current)
       if (checked) {
@@ -1332,6 +1457,18 @@ export function AdminConsole() {
 
   function toggleSelectAllVisibleInventory(checked: boolean) {
     const visibleInventoryIds = (inventory?.items || []).map((item) => item.id)
+    if (filteredInventorySelection) {
+      setFilteredInventorySelection((current) => {
+        if (!current) return current
+        const excluded = new Set(current.excludedIds)
+        for (const inventoryId of visibleInventoryIds) {
+          if (checked) excluded.delete(inventoryId)
+          else excluded.add(inventoryId)
+        }
+        return { ...current, excludedIds: Array.from(excluded) }
+      })
+      return
+    }
     setSelectedInventoryIds((current) => {
       const next = new Set(current)
       for (const inventoryId of visibleInventoryIds) {
@@ -1354,7 +1491,12 @@ export function AdminConsole() {
         protocol: inventoryFilters.protocol || undefined,
         q: inventoryFilters.q,
       })
-      setSelectedInventoryIds(selection.ids)
+      setSelectedInventoryIds([])
+      setFilteredInventorySelection({
+        filters: { ...inventoryFilters },
+        total: selection.total,
+        excludedIds: [],
+      })
       showSuccessToast(
         "已选择筛选结果",
         `已选择当前筛选条件下的 ${selection.total} 条库存记录。`
@@ -1377,9 +1519,7 @@ export function AdminConsole() {
     try {
       const payload = await deleteAdminInventory(token, inventoryId)
       showSuccessToast("库存记录已删除", payload.message)
-      setSelectedInventoryIds((current) =>
-        current.filter((item) => item !== inventoryId)
-      )
+      clearInventorySelection()
       await Promise.all([loadOverviewAndTypes(), loadInventory()])
     } catch (error) {
       handleApiError(error, "删除库存失败")
@@ -1387,13 +1527,13 @@ export function AdminConsole() {
   }
 
   async function handleBatchDeleteInventory() {
-    if (!selectedInventoryIds.length) {
+    if (!selectedInventoryCount) {
       showErrorToast("请先选择库存", "批量删除前需要至少勾选一条库存记录。")
       return
     }
 
     const confirmed = window.confirm(
-      `确定删除已选择的 ${selectedInventoryIds.length} 条库存记录吗？`
+      `确定删除已选择的 ${selectedInventoryCount} 条库存记录吗？`
     )
     if (!confirmed) {
       return
@@ -1402,10 +1542,10 @@ export function AdminConsole() {
     try {
       const payload = await batchDeleteAdminInventory(
         token,
-        selectedInventoryIds
+        getInventorySelectionTarget()
       )
       showSuccessToast("批量删除完成", payload.message)
-      setSelectedInventoryIds([])
+      clearInventorySelection()
       await Promise.all([
         loadOverviewAndTypes(),
         loadInventory(undefined, { page: 1 }),
@@ -1416,7 +1556,7 @@ export function AdminConsole() {
   }
 
   async function handleExportSelectedInventory() {
-    if (!selectedInventoryIds.length) {
+    if (!selectedInventoryCount) {
       showErrorToast("请先选择库存", "导出前需要至少勾选一条库存记录。")
       return
     }
@@ -1424,12 +1564,12 @@ export function AdminConsole() {
     try {
       const exported = await exportAdminInventoryText(
         token,
-        selectedInventoryIds
+        getInventorySelectionTarget()
       )
       downloadTextFile(exported.text, exported.filename)
       showSuccessToast(
         "导出成功",
-        `已导出 ${selectedInventoryIds.length} 条库存记录。`
+        `已导出 ${selectedInventoryCount} 条库存记录。`
       )
     } catch (error) {
       handleApiError(error, "导出库存失败")
@@ -1440,7 +1580,7 @@ export function AdminConsole() {
     event: React.FormEvent<HTMLFormElement>
   ) {
     event.preventDefault()
-    if (!selectedInventoryIds.length) {
+    if (!selectedInventoryCount) {
       showErrorToast("请先选择库存", "批量编辑前需要至少勾选一条库存记录。")
       return
     }
@@ -1455,14 +1595,14 @@ export function AdminConsole() {
     setInventoryBatchSubmitting(true)
     try {
       const payload = await batchUpdateAdminInventory(token, {
-        inventory_ids: selectedInventoryIds,
+        ...getInventorySelectionTarget(),
         ...(hasTypeId ? { type_id: Number(inventoryBatchEdit.typeId) } : {}),
         ...(hasStatus
           ? { status: inventoryBatchEdit.status as "available" | "unavailable" }
           : {}),
       })
       setInventoryBatchEditDialogOpen(false)
-      setSelectedInventoryIds([])
+      clearInventorySelection()
       showSuccessToast("库存批量编辑完成", payload.message)
       await Promise.all([
         loadOverviewAndTypes(),
@@ -1511,6 +1651,16 @@ export function AdminConsole() {
   }
 
   function toggleSelectedCode(codeId: number, checked: boolean) {
+    if (filteredCodeSelection) {
+      setFilteredCodeSelection((current) => {
+        if (!current) return current
+        const excluded = new Set(current.excludedIds)
+        if (checked) excluded.delete(codeId)
+        else excluded.add(codeId)
+        return { ...current, excludedIds: Array.from(excluded) }
+      })
+      return
+    }
     setSelectedCodeIds((current) => {
       const next = new Set(current)
       if (checked) {
@@ -1524,6 +1674,18 @@ export function AdminConsole() {
 
   function toggleSelectAllVisibleCodes(checked: boolean) {
     const visibleCodeIds = (codes?.items || []).map((item) => item.id)
+    if (filteredCodeSelection) {
+      setFilteredCodeSelection((current) => {
+        if (!current) return current
+        const excluded = new Set(current.excludedIds)
+        for (const codeId of visibleCodeIds) {
+          if (checked) excluded.delete(codeId)
+          else excluded.add(codeId)
+        }
+        return { ...current, excludedIds: Array.from(excluded) }
+      })
+      return
+    }
     setSelectedCodeIds((current) => {
       const next = new Set(current)
       for (const codeId of visibleCodeIds) {
@@ -1547,7 +1709,12 @@ export function AdminConsole() {
         min_quantity: codeFilters.minQuantity,
         max_quantity: codeFilters.maxQuantity,
       })
-      setSelectedCodeIds(selection.ids)
+      setSelectedCodeIds([])
+      setFilteredCodeSelection({
+        filters: { ...codeFilters },
+        total: selection.total,
+        excludedIds: [],
+      })
       showSuccessToast(
         "已选择筛选结果",
         `已选择当前筛选条件下的 ${selection.total} 个兑换码。`
@@ -1590,9 +1757,7 @@ export function AdminConsole() {
     try {
       const payload = await deleteAdminCode(token, item.id)
       showSuccessToast("卡密已删除", payload.message)
-      setSelectedCodeIds((current) =>
-        current.filter((codeId) => codeId !== item.id)
-      )
+      clearCodeSelection()
       await Promise.all([loadOverviewAndTypes(), loadCodes(), loadRecords()])
     } catch (error) {
       handleApiError(error, "删除卡密失败")
@@ -1612,7 +1777,7 @@ export function AdminConsole() {
       showSuccessToast("卡密回退完成", payload.message)
       setRecordDetailDialogOpen(false)
       setRecordDetail(null)
-      setSelectedCodeIds((current) => current.filter((id) => id !== codeId))
+      clearCodeSelection()
       await Promise.all([
         loadOverviewAndTypes(),
         loadInventory(),
@@ -1625,14 +1790,14 @@ export function AdminConsole() {
   }
 
   async function handleBatchCodeStatus(status: "unused" | "disabled") {
-    if (!selectedCodeIds.length) {
+    if (!selectedCodeCount) {
       showErrorToast("请先选择卡密", "批量操作前需要至少勾选一个兑换码。")
       return
     }
 
     const actionText = status === "disabled" ? "禁用" : "恢复"
     const confirmed = window.confirm(
-      `确定${actionText}已选择的 ${selectedCodeIds.length} 个兑换码吗？`
+      `确定${actionText}已选择的 ${selectedCodeCount} 个兑换码吗？`
     )
     if (!confirmed) {
       return
@@ -1641,10 +1806,11 @@ export function AdminConsole() {
     try {
       const payload = await batchUpdateAdminCodeStatus(
         token,
-        selectedCodeIds,
+        getCodeSelectionTarget(),
         status
       )
       showSuccessToast("卡密批量操作完成", payload.message)
+      clearCodeSelection()
       await Promise.all([loadOverviewAndTypes(), loadCodes(), loadRecords()])
     } catch (error) {
       handleApiError(error, "卡密批量状态更新失败")
@@ -1652,22 +1818,25 @@ export function AdminConsole() {
   }
 
   async function handleBatchDeleteCodes() {
-    if (!selectedCodeIds.length) {
+    if (!selectedCodeCount) {
       showErrorToast("请先选择卡密", "批量删除前需要至少勾选一个兑换码。")
       return
     }
 
     const confirmed = window.confirm(
-      `确定删除已选择的 ${selectedCodeIds.length} 个兑换码吗？已兑换卡密会自动跳过。`
+      `确定删除已选择的 ${selectedCodeCount} 个兑换码吗？已兑换卡密会自动跳过。`
     )
     if (!confirmed) {
       return
     }
 
     try {
-      const payload = await batchDeleteAdminCodes(token, selectedCodeIds)
+      const payload = await batchDeleteAdminCodes(
+        token,
+        getCodeSelectionTarget()
+      )
       showSuccessToast("批量删除完成", payload.message)
-      setSelectedCodeIds([])
+      clearCodeSelection()
       await Promise.all([
         loadOverviewAndTypes(),
         loadCodes(undefined, { page: 1 }),
@@ -1682,7 +1851,7 @@ export function AdminConsole() {
     event: React.FormEvent<HTMLFormElement>
   ) {
     event.preventDefault()
-    if (!selectedCodeIds.length) {
+    if (!selectedCodeCount) {
       showErrorToast("请先选择卡密", "批量编辑前需要至少勾选一个兑换码。")
       return
     }
@@ -1706,12 +1875,12 @@ export function AdminConsole() {
     setCodeBatchSubmitting(true)
     try {
       const payload = await batchUpdateAdminCodes(token, {
-        code_ids: selectedCodeIds,
+        ...getCodeSelectionTarget(),
         ...(hasTypeId ? { type_id: Number(codeBatchEdit.typeId) } : {}),
         ...(hasQuantity ? { quantity: Number(quantityText) } : {}),
       })
       setCodeBatchEditDialogOpen(false)
-      setSelectedCodeIds([])
+      clearCodeSelection()
       showSuccessToast("卡密批量编辑完成", payload.message)
       await Promise.all([
         loadOverviewAndTypes(),
@@ -1726,19 +1895,19 @@ export function AdminConsole() {
   }
 
   async function handleExportSelectedCodes() {
-    if (!selectedCodeIds.length) {
+    if (!selectedCodeCount) {
       showErrorToast("请先选择卡密", "导出前需要至少勾选一个兑换码。")
       return
     }
 
     try {
       const exported = await exportAdminCodesText(token, {
-        code_ids: selectedCodeIds,
+        ...getCodeSelectionTarget(),
       })
       downloadTextFile(exported.text, exported.filename)
       showSuccessToast(
         "导出成功",
-        `已导出 ${selectedCodeIds.length} 个兑换码。`
+        `已导出 ${selectedCodeCount} 个兑换码。`
       )
     } catch (error) {
       handleApiError(error, "导出卡密失败")
@@ -1838,16 +2007,22 @@ export function AdminConsole() {
 
   const visibleInventoryIds = (inventory?.items || []).map((item) => item.id)
   const selectedInventorySet = new Set(selectedInventoryIds)
+  const excludedInventorySet = new Set(
+    filteredInventorySelection?.excludedIds || []
+  )
   const selectedVisibleInventoryCount = visibleInventoryIds.filter((id) =>
-    selectedInventorySet.has(id)
+    filteredInventorySelection
+      ? !excludedInventorySet.has(id)
+      : selectedInventorySet.has(id)
   ).length
   const allVisibleInventorySelected =
     visibleInventoryIds.length > 0 &&
     selectedVisibleInventoryCount === visibleInventoryIds.length
   const visibleCodeIds = (codes?.items || []).map((item) => item.id)
   const selectedCodeSet = new Set(selectedCodeIds)
+  const excludedCodeSet = new Set(filteredCodeSelection?.excludedIds || [])
   const selectedVisibleCodeCount = visibleCodeIds.filter((id) =>
-    selectedCodeSet.has(id)
+    filteredCodeSelection ? !excludedCodeSet.has(id) : selectedCodeSet.has(id)
   ).length
   const allVisibleCodesSelected =
     visibleCodeIds.length > 0 &&
@@ -2036,7 +2211,7 @@ export function AdminConsole() {
           </div>
         </header>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <Tabs value={activeTab} onValueChange={handleActiveTabChange}>
           <div className="[scrollbar-width:none] overflow-x-auto pb-1 [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
             <TabsList variant="line" className="min-w-max">
               <TabsTrigger value="types">
@@ -2203,7 +2378,7 @@ export function AdminConsole() {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuLabel>
-                        已选 {selectedInventoryIds.length} 条库存
+                        已选 {selectedInventoryCount} 条库存
                       </DropdownMenuLabel>
                       <DropdownMenuGroup>
                         <DropdownMenuItem
@@ -2217,8 +2392,8 @@ export function AdminConsole() {
                             : "全选当前筛选结果"}
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          disabled={!selectedInventoryIds.length}
-                          onSelect={() => setSelectedInventoryIds([])}
+                          disabled={!selectedInventoryCount}
+                          onSelect={clearInventorySelection}
                         >
                           清空选择
                         </DropdownMenuItem>
@@ -2268,7 +2443,7 @@ export function AdminConsole() {
                       已兑换 {overview?.redeemed_inventory_count || 0}
                     </Badge>
                     <Badge variant="outline">
-                      已选 {selectedInventoryIds.length}
+                      已选 {selectedInventoryCount}
                     </Badge>
                   </div>
                 </CardDescription>
@@ -2422,7 +2597,11 @@ export function AdminConsole() {
                           <TableCell className="px-4 align-top">
                             <input
                               type="checkbox"
-                              checked={selectedInventorySet.has(item.id)}
+                              checked={
+                                filteredInventorySelection
+                                  ? !excludedInventorySet.has(item.id)
+                                  : selectedInventorySet.has(item.id)
+                              }
                               onChange={(event) =>
                                 toggleSelectedInventory(
                                   item.id,
@@ -2591,7 +2770,7 @@ export function AdminConsole() {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuLabel>
-                        已选 {selectedCodeIds.length} 个兑换码
+                        已选 {selectedCodeCount} 个兑换码
                       </DropdownMenuLabel>
                       <DropdownMenuGroup>
                         <DropdownMenuItem
@@ -2605,8 +2784,8 @@ export function AdminConsole() {
                             : "全选当前筛选结果"}
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          disabled={!selectedCodeIds.length}
-                          onSelect={() => setSelectedCodeIds([])}
+                          disabled={!selectedCodeCount}
+                          onSelect={clearCodeSelection}
                         >
                           清空选择
                         </DropdownMenuItem>
@@ -2677,7 +2856,7 @@ export function AdminConsole() {
                       已禁用 {overview?.disabled_code_count || 0}
                     </Badge>
                     <Badge variant="outline">
-                      已选 {selectedCodeIds.length}
+                      已选 {selectedCodeCount}
                     </Badge>
                   </div>
                 </CardDescription>
@@ -2838,7 +3017,11 @@ export function AdminConsole() {
                           <TableCell className="px-4 align-top">
                             <input
                               type="checkbox"
-                              checked={selectedCodeSet.has(item.id)}
+                              checked={
+                                filteredCodeSelection
+                                  ? !excludedCodeSet.has(item.id)
+                                  : selectedCodeSet.has(item.id)
+                              }
                               onChange={(event) =>
                                 toggleSelectedCode(
                                   item.id,
@@ -3678,7 +3861,7 @@ export function AdminConsole() {
           <DialogHeader className="border-b border-border/70 px-5 py-4">
             <DialogTitle>批量编辑库存</DialogTitle>
             <DialogDescription>
-              当前已选择 {selectedInventoryIds.length}{" "}
+              当前已选择 {selectedInventoryCount}{" "}
               条库存，可同时修改目标类型与可用状态。
             </DialogDescription>
           </DialogHeader>
@@ -3769,7 +3952,7 @@ export function AdminConsole() {
           <DialogHeader className="border-b border-border/70 px-5 py-4">
             <DialogTitle>批量编辑卡密</DialogTitle>
             <DialogDescription>
-              当前已选择 {selectedCodeIds.length}{" "}
+              当前已选择 {selectedCodeCount}{" "}
               个卡密，可同时修改目标类型与可兑数量。
             </DialogDescription>
           </DialogHeader>

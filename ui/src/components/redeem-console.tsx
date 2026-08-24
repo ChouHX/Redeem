@@ -211,33 +211,40 @@ function ResultOutputCard({
     <Card
       className={
         emphasized
-          ? "overflow-hidden border border-primary/50 bg-card/98 shadow-xl shadow-primary/8"
+          ? "border border-primary/30 bg-card/97 shadow-sm"
           : "border border-border/70 bg-card/97"
       }
     >
       <CardHeader
         className={
           emphasized
-            ? "gap-4 border-b border-primary/25 bg-gradient-to-br from-primary/14 via-card to-card py-6"
+            ? "gap-2 border-b border-border/70 pb-3"
             : "border-b border-border/70"
         }
       >
         {emphasized ? (
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex items-start gap-3">
-              <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
-                <ShieldCheckIcon className="size-5" />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-w-0 items-start gap-2.5">
+              <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary">
+                <ShieldCheckIcon className="size-4" />
               </div>
-              <div className="flex flex-col gap-1">
-                <CardTitle className="font-heading text-2xl md:text-3xl">
-                  {title}
-                </CardTitle>
-                <CardDescription className="max-w-2xl text-sm">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <CardTitle className="text-lg md:text-xl">{title}</CardTitle>
+                <CardDescription className="max-w-2xl text-xs/normal">
                   {description}
                 </CardDescription>
               </div>
             </div>
-            <Badge className="w-fit px-3 py-1 text-xs">{badgeLabel}</Badge>
+            <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground sm:max-w-64 sm:justify-end">
+              <Badge variant="secondary" className="h-5 px-1.5 text-[11px]">
+                {badgeLabel}
+              </Badge>
+              <span className="font-medium text-foreground">{typeName}</span>
+              <span aria-hidden="true">·</span>
+              <span>{itemCount} 条数据</span>
+              <span aria-hidden="true">·</span>
+              <span>{formatDateTime(redeemedAt)}</span>
+            </div>
           </div>
         ) : (
           <>
@@ -251,41 +258,16 @@ function ResultOutputCard({
             <CardDescription>{description}</CardDescription>
           </>
         )}
-
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
         {emphasized ? (
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="border border-border/70 bg-background/75 px-3 py-3">
-              <p className="text-[11px] text-muted-foreground">发放类型</p>
-              <p className="mt-1 text-sm font-medium text-foreground">
-                {typeName}
-              </p>
-            </div>
-            <div className="border border-border/70 bg-background/75 px-3 py-3">
-              <p className="text-[11px] text-muted-foreground">发放数量</p>
-              <p className="mt-1 text-sm font-medium text-foreground">
-                {itemCount} 条账号数据
-              </p>
-            </div>
-            <div className="border border-border/70 bg-background/75 px-3 py-3">
-              <p className="text-[11px] text-muted-foreground">兑换时间</p>
-              <p className="mt-1 text-sm font-medium text-foreground">
-                {formatDateTime(redeemedAt)}
-              </p>
-            </div>
-          </div>
-        ) : null}
-
-        {emphasized ? (
-          <div className="flex flex-col gap-3 border border-primary/25 bg-primary/7 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 border border-border/70 bg-muted/30 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-medium text-foreground">
-                  支持协议
-                </span>
+                <span className="text-xs text-muted-foreground">取件协议</span>
                 {protocols.length ? (
                   protocols.map((protocol) => (
-                    <Badge key={protocol} variant="secondary">
-                      <MailIcon data-icon="inline-start" />
+                    <Badge key={protocol} variant="outline">
                       {MAIL_PROTOCOL_INFO[protocol].label}
                     </Badge>
                   ))
@@ -293,40 +275,36 @@ function ResultOutputCard({
                   <Badge variant="outline">未标注</Badge>
                 )}
               </div>
-              <p className="flex flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
-                <ClockIcon className="size-3.5 shrink-0" />
+              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                <ClockIcon className="mt-0.5 size-3.5 shrink-0" />
                 <span>
-                  数据将在 {retentionHours || 24} 小时后删除
-                  {expiresAt ? `（${formatDateTime(expiresAt)}）` : ""}，请立即保存。
+                  {retentionHours || 24} 小时后自动删除
+                  {expiresAt ? ` · ${formatDateTime(expiresAt)}` : ""}
                 </span>
               </p>
             </div>
             {onOpenReminder ? (
-              <Button
+              <button
                 type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0"
+                className="w-fit text-xs text-primary underline-offset-4 hover:underline"
                 onClick={onOpenReminder}
               >
-                查看完整提醒
-              </Button>
+                查看提醒
+              </button>
             ) : null}
           </div>
         ) : null}
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4 py-5">
+
         <div
           className={
             emphasized
-              ? "flex flex-col gap-2 sm:flex-row"
+              ? "flex flex-wrap gap-2"
               : "flex flex-wrap justify-end gap-2"
           }
         >
           <Button
             variant={emphasized ? "default" : "outline"}
-            size={emphasized ? "lg" : "sm"}
-            className={emphasized ? "sm:flex-1" : undefined}
+            size="sm"
             onClick={() => void copyTextToClipboard(fullText, "结果内容")}
           >
             <CopyIcon data-icon="inline-start" />
@@ -334,8 +312,7 @@ function ResultOutputCard({
           </Button>
           <Button
             variant={emphasized ? "secondary" : "outline"}
-            size={emphasized ? "lg" : "sm"}
-            className={emphasized ? "sm:flex-1" : undefined}
+            size="sm"
             onClick={handleDownload}
           >
             <DownloadIcon data-icon="inline-start" />
@@ -343,7 +320,7 @@ function ResultOutputCard({
           </Button>
           <Button
             variant="outline"
-            size={emphasized ? "lg" : "sm"}
+            size="sm"
             onClick={() => void copyTextToClipboard(code, "兑换码")}
           >
             <CopyIcon data-icon="inline-start" />
@@ -364,7 +341,7 @@ function ResultOutputCard({
 
         <div className={emphasized ? "flex flex-col gap-2" : undefined}>
           {emphasized ? (
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm font-medium text-foreground">账号数据</p>
               <p className="text-xs text-muted-foreground">
                 请复制或下载后妥善保存
@@ -380,10 +357,8 @@ function ResultOutputCard({
             )}
             wrap="off"
             spellCheck={false}
-            className={`min-h-64 resize-y overflow-x-scroll overflow-y-auto font-mono text-xs leading-6 ${
-              emphasized
-                ? "border-primary/35 bg-background shadow-inner"
-                : ""
+            className={`resize-y overflow-x-scroll overflow-y-auto font-mono text-xs leading-6 ${
+              emphasized ? "min-h-40 bg-background" : "min-h-64"
             }`}
           />
         </div>
@@ -494,9 +469,11 @@ export function RedeemConsole() {
 
     try {
       const payload = await exchangeRedeemCode(nextCode)
+      setRedeemReminderOpen(false)
       setExchangeResult(payload.data)
       setExchangeCode("")
       setQueryCode(payload.data.code)
+      await revealRedeemResult("auto")
       setRedeemReminderOpen(true)
       notify("兑换成功", "邮箱数据已发放，请尽快复制保存。")
       await loadCatalog()
@@ -678,11 +655,17 @@ export function RedeemConsole() {
   const redeemRetentionHours = exchangeResult?.access_ttl_hours || 24
   const redeemExpiresAt = exchangeResult?.access_expires_at || ""
 
-  function revealRedeemResult() {
-    window.requestAnimationFrame(() => {
-      redeemResultRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
+  function revealRedeemResult(behavior: ScrollBehavior = "smooth") {
+    return new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => {
+        redeemResultRef.current?.scrollIntoView({
+          behavior,
+          block: "start",
+        })
+
+        // Give the browser one frame to apply the new scroll position before a
+        // modal locks page scrolling.
+        window.requestAnimationFrame(() => resolve())
       })
     })
   }
@@ -866,7 +849,7 @@ export function RedeemConsole() {
                 <div ref={redeemResultRef} className="scroll-mt-4">
                   <ResultOutputCard
                     badgeLabel="兑换成功 · 已发放"
-                    title="账号已成功发放"
+                    title="兑换结果"
                     description="请立即复制或下载账号数据，并确认本次账号支持的取件协议。"
                     code={exchangeResult.code}
                     typeName={exchangeResult.type.name}

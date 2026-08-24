@@ -1206,6 +1206,14 @@ export function getRedeemInventoryIds(filters = {}) {
     .map((row) => Number(row.id));
 }
 
+export function getRedeemInventorySelectionCount(filters = {}) {
+  const { where, params } = buildRedeemInventoryWhere(filters);
+  const row = db
+    .prepare(`SELECT COUNT(*) AS total FROM redeem_inventory inventory ${where}`)
+    .get(...params);
+  return Number(row?.total || 0);
+}
+
 export function importRedeemInventory({
   type_id,
   items = [],
@@ -1858,6 +1866,14 @@ export function getRedeemCodeIds(filters = {}) {
     )
     .all(...params)
     .map((row) => Number(row.id));
+}
+
+export function getRedeemCodeSelectionCount(filters = {}) {
+  const { where, params } = buildRedeemCodesWhere(filters);
+  const row = db
+    .prepare(`SELECT COUNT(*) AS total FROM redeem_codes codes ${where}`)
+    .get(...params);
+  return Number(row?.total || 0);
 }
 
 export function getRedeemCodesByIds(ids) {

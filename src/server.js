@@ -33,11 +33,13 @@ import {
   getRedeemAdminOverview,
   getRedeemCodesPaged,
   getRedeemCodeIds,
+  getRedeemCodeSelectionCount,
   getRedeemEmailTypeById,
   getRedeemEmailTypes,
   getRedeemInventoryByIds,
   getRedeemInventoryPaged,
   getRedeemInventoryIds,
+  getRedeemInventorySelectionCount,
   getRedeemRecordsPaged,
   getSystemConfig,
   getSystemConfigValue,
@@ -377,6 +379,21 @@ function normalizeIdList(values) {
         .filter((id) => Number.isInteger(id) && id > 0),
     ),
   ];
+}
+
+function resolveFilteredSelection(value, getIds) {
+  const explicitIds = normalizeIdList(Array.isArray(value) ? value : []);
+  if (explicitIds.length) {
+    return explicitIds;
+  }
+
+  const selection = value?.selection;
+  if (!selection || typeof selection !== "object") {
+    return [];
+  }
+
+  const excluded = new Set(normalizeIdList(selection.exclude_ids || []));
+  return getIds(selection.filters || {}).filter((id) => !excluded.has(id));
 }
 
 function hasBodyValue(value) {
@@ -1143,13 +1160,13 @@ app.get("/api/redeem/admin/inventory", requireAdmin, (req, res) => {
 });
 
 app.get("/api/redeem/admin/inventory/selection", requireAdmin, (req, res) => {
-  const ids = getRedeemInventoryIds({
+  const total = getRedeemInventorySelectionCount({
     type_id: req.query.type_id,
     status: String(req.query.status || ""),
     protocol: String(req.query.protocol || ""),
     q: String(req.query.q || ""),
   });
-  res.json(ok({ ids, total: ids.length }, `已匹配 ${ids.length} 条库存记录`));
+  res.json(ok({ total }, `已匹配 ${total} 条库存记录`));
 });
 
 app.post(
@@ -1284,7 +1301,10 @@ app.post(
   "/api/redeem/admin/inventory/batch-delete",
   requireAdmin,
   (req, res) => {
-    const inventoryIds = normalizeIdList(req.body?.inventory_ids || []);
+    const inventoryIds = resolveFilteredSelection(
+      req.body?.inventory_ids?.length ? req.body.inventory_ids : req.body,
+      getRedeemInventoryIds,
+    );
 
     if (!inventoryIds.length) {
       res.status(400).json(fail("请至少选择一条库存记录"));
@@ -1302,7 +1322,10 @@ app.post(
   "/api/redeem/admin/inventory/batch-update",
   requireAdmin,
   (req, res) => {
-    const inventoryIds = normalizeIdList(req.body?.inventory_ids || []);
+    const inventoryIds = resolveFilteredSelection(
+      req.body?.inventory_ids?.length ? req.body.inventory_ids : req.body,
+      getRedeemInventoryIds,
+    );
     if (!inventoryIds.length) {
       res.status(400).json(fail("请至少选择一条库存记录"));
       return;
@@ -1350,7 +1373,10 @@ app.post(
 );
 
 app.post("/api/redeem/admin/inventory/export", requireAdmin, (req, res) => {
-  const inventoryIds = normalizeIdList(req.body?.inventory_ids || []);
+  const inventoryIds = resolveFilteredSelection(
+    req.body?.inventory_ids?.length ? req.body.inventory_ids : req.body,
+    getRedeemInventoryIds,
+  );
 
   if (!inventoryIds.length) {
     res.status(400).json(fail("请至少选择一条库存记录"));
@@ -1392,14 +1418,14 @@ app.get("/api/redeem/admin/codes", requireAdmin, (req, res) => {
 });
 
 app.get("/api/redeem/admin/codes/selection", requireAdmin, (req, res) => {
-  const ids = getRedeemCodeIds({
+  const total = getRedeemCodeSelectionCount({
     type_id: req.query.type_id,
     status: String(req.query.status || ""),
     q: String(req.query.q || ""),
     min_quantity: req.query.min_quantity,
     max_quantity: req.query.max_quantity,
   });
-  res.json(ok({ ids, total: ids.length }, `已匹配 ${ids.length} 个兑换码`));
+  res.json(ok({ total }, `已匹配 ${total} 个兑换码`));
 });
 
 app.post("/api/redeem/admin/codes/generate", requireAdmin, (req, res) => {
@@ -1491,7 +1517,10 @@ app.delete("/api/redeem/admin/codes/:codeId", requireAdmin, (req, res) => {
 });
 
 app.post("/api/redeem/admin/codes/batch-status", requireAdmin, (req, res) => {
-  const codeIds = normalizeIdList(req.body?.code_ids || []);
+  const codeIds = resolveFilteredSelection(
+    req.body?.code_ids?.length ? req.body.code_ids : req.body,
+    getRedeemCodeIds,
+  );
   if (!codeIds.length) {
     res.status(400).json(fail("请至少选择一个兑换码"));
     return;
@@ -1510,7 +1539,10 @@ app.post("/api/redeem/admin/codes/batch-status", requireAdmin, (req, res) => {
 });
 
 app.post("/api/redeem/admin/codes/batch-delete", requireAdmin, (req, res) => {
-  const codeIds = normalizeIdList(req.body?.code_ids || []);
+  const codeIds = resolveFilteredSelection(
+    req.body?.code_ids?.length ? req.body.code_ids : req.body,
+    getRedeemCodeIds,
+  );
   if (!codeIds.length) {
     res.status(400).json(fail("请至少选择一个兑换码"));
     return;
@@ -1528,7 +1560,10 @@ app.post("/api/redeem/admin/codes/batch-delete", requireAdmin, (req, res) => {
 });
 
 app.post("/api/redeem/admin/codes/batch-update", requireAdmin, (req, res) => {
-  const codeIds = normalizeIdList(req.body?.code_ids || []);
+  const codeIds = resolveFilteredSelection(
+    req.body?.code_ids?.length ? req.body.code_ids : req.body,
+    getRedeemCodeIds,
+  );
   if (!codeIds.length) {
     res.status(400).json(fail("请至少选择一个兑换码"));
     return;
@@ -1569,7 +1604,10 @@ app.post("/api/redeem/admin/codes/batch-update", requireAdmin, (req, res) => {
 });
 
 app.post("/api/redeem/admin/codes/export", requireAdmin, (req, res) => {
-  const codeIds = normalizeIdList(req.body?.code_ids || []);
+  const codeIds = resolveFilteredSelection(
+    req.body?.code_ids?.length ? req.body.code_ids : req.body,
+    getRedeemCodeIds,
+  );
   const filters = {
     type_id: req.body?.type_id,
     status: String(req.body?.status || ""),
@@ -1577,7 +1615,9 @@ app.post("/api/redeem/admin/codes/export", requireAdmin, (req, res) => {
     min_quantity: req.body?.min_quantity,
     max_quantity: req.body?.max_quantity,
   };
-  const items = codeIds.length
+  const hasExplicitSelection =
+    Boolean(req.body?.selection) || Boolean(req.body?.code_ids?.length);
+  const items = hasExplicitSelection
     ? getRedeemCodesByIds(codeIds)
     : getRedeemCodesForExport(filters);
 

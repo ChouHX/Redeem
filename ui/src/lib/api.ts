@@ -234,9 +234,37 @@ export type PagedResult<T> = {
 }
 
 export type FilteredSelectionResult = {
-  ids: number[]
   total: number
 }
+
+export type InventorySelectionTarget =
+  | { inventory_ids: number[] }
+  | {
+      selection: {
+        filters: {
+          type_id?: string
+          status?: string
+          protocol?: MailProtocol
+          q?: string
+        }
+        exclude_ids: number[]
+      }
+    }
+
+export type CodeSelectionTarget =
+  | { code_ids: number[] }
+  | {
+      selection: {
+        filters: {
+          type_id?: string
+          status?: string
+          q?: string
+          min_quantity?: string
+          max_quantity?: string
+        }
+        exclude_ids: number[]
+      }
+    }
 
 export type RedeemInventoryItem = {
   id: number
@@ -507,10 +535,11 @@ export async function textRequest(
   return response
 }
 
-export async function verifyAdminToken(token: string) {
+export async function verifyAdminToken(token: string, signal?: AbortSignal) {
   const payload = await apiRequest<null>("/api/admin/verify", {
     method: "POST",
     body: { token },
+    signal,
   })
   return payload.success
 }
@@ -646,21 +675,23 @@ export async function fetchTempMailboxMessageDetail(
   return payload.data
 }
 
-export async function fetchAdminOverview(token: string) {
+export async function fetchAdminOverview(token: string, signal?: AbortSignal) {
   const payload = await apiRequest<AdminOverview>(
     "/api/redeem/admin/overview",
     {
       method: "GET",
       token,
+      signal,
     }
   )
   return payload.data
 }
 
-export async function fetchAdminAds(token: string) {
+export async function fetchAdminAds(token: string, signal?: AbortSignal) {
   const payload = await apiRequest<AdSlotConfig>("/api/system/ads", {
     method: "GET",
     token,
+    signal,
   })
   return payload.data
 }
@@ -674,10 +705,11 @@ export async function updateAdminAds(token: string, body: AdSlotConfig) {
   return payload
 }
 
-export async function fetchAdminFaq(token: string) {
+export async function fetchAdminFaq(token: string, signal?: AbortSignal) {
   const payload = await apiRequest<FaqConfig>("/api/system/faq", {
     method: "GET",
     token,
+    signal,
   })
   return payload.data
 }
@@ -691,7 +723,11 @@ export async function updateAdminFaq(token: string, markdown: string) {
   return payload
 }
 
-export async function fetchAdminTypes(token: string, includeInactive = true) {
+export async function fetchAdminTypes(
+  token: string,
+  includeInactive = true,
+  signal?: AbortSignal
+) {
   const payload = await apiRequest<{ items: RedeemType[] }>(
     `/api/redeem/admin/types${createQuery({
       include_inactive: includeInactive ? "true" : "false",
@@ -699,6 +735,7 @@ export async function fetchAdminTypes(token: string, includeInactive = true) {
     {
       method: "GET",
       token,
+      signal,
     }
   )
   return payload.data.items
@@ -748,13 +785,15 @@ export async function fetchAdminInventory(
     q?: string
     page?: number
     page_size?: number
-  }
+  },
+  signal?: AbortSignal
 ) {
   const payload = await apiRequest<PagedResult<RedeemInventoryItem>>(
     `/api/redeem/admin/inventory${createQuery(params)}`,
     {
       method: "GET",
       token,
+      signal,
     }
   )
   return payload.data
@@ -902,14 +941,14 @@ export async function updateAdminInventoryStatus(
 
 export async function batchDeleteAdminInventory(
   token: string,
-  inventoryIds: number[]
+  target: InventorySelectionTarget
 ) {
   const payload = await apiRequest<{ deleted_count: number }>(
     "/api/redeem/admin/inventory/batch-delete",
     {
       method: "POST",
       token,
-      body: { inventory_ids: inventoryIds },
+      body: target,
     }
   )
   return payload
@@ -918,10 +957,9 @@ export async function batchDeleteAdminInventory(
 export async function batchUpdateAdminInventory(
   token: string,
   body: {
-    inventory_ids: number[]
     type_id?: number
     status?: "available" | "unavailable"
-  }
+  } & InventorySelectionTarget
 ) {
   const payload = await apiRequest<InventoryBatchUpdateResult>(
     "/api/redeem/admin/inventory/batch-update",
@@ -936,7 +974,7 @@ export async function batchUpdateAdminInventory(
 
 export async function exportAdminInventoryText(
   token: string,
-  inventoryIds: number[]
+  target: InventorySelectionTarget
 ) {
   const response = await textRequest("/api/redeem/admin/inventory/export", {
     method: "POST",
@@ -944,7 +982,7 @@ export async function exportAdminInventoryText(
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ inventory_ids: inventoryIds }),
+    body: JSON.stringify(target),
   })
   const text = await response.text()
   const disposition = response.headers.get("content-disposition") || ""
@@ -965,13 +1003,15 @@ export async function fetchAdminCodes(
     max_quantity?: string
     page?: number
     page_size?: number
-  }
+  },
+  signal?: AbortSignal
 ) {
   const payload = await apiRequest<PagedResult<RedeemCodeItem>>(
     `/api/redeem/admin/codes${createQuery(params)}`,
     {
       method: "GET",
       token,
+      signal,
     }
   )
   return payload.data
@@ -1055,7 +1095,7 @@ export async function deleteAdminCode(token: string, codeId: number) {
 
 export async function batchUpdateAdminCodeStatus(
   token: string,
-  codeIds: number[],
+  target: CodeSelectionTarget,
   status: "unused" | "disabled"
 ) {
   const payload = await apiRequest<CodeBatchStatusResult>(
@@ -1063,19 +1103,22 @@ export async function batchUpdateAdminCodeStatus(
     {
       method: "POST",
       token,
-      body: { code_ids: codeIds, status },
+      body: { ...target, status },
     }
   )
   return payload
 }
 
-export async function batchDeleteAdminCodes(token: string, codeIds: number[]) {
+export async function batchDeleteAdminCodes(
+  token: string,
+  target: CodeSelectionTarget
+) {
   const payload = await apiRequest<CodeBatchDeleteResult>(
     "/api/redeem/admin/codes/batch-delete",
     {
       method: "POST",
       token,
-      body: { code_ids: codeIds },
+      body: target,
     }
   )
   return payload
@@ -1084,10 +1127,9 @@ export async function batchDeleteAdminCodes(token: string, codeIds: number[]) {
 export async function batchUpdateAdminCodes(
   token: string,
   body: {
-    code_ids: number[]
     type_id?: number
     quantity?: number
-  }
+  } & CodeSelectionTarget
 ) {
   const payload = await apiRequest<CodeBatchUpdateResult>(
     "/api/redeem/admin/codes/batch-update",
@@ -1103,9 +1145,7 @@ export async function batchUpdateAdminCodes(
 export async function exportAdminCodesText(
   token: string,
   body:
-    | {
-        code_ids: number[]
-      }
+    | CodeSelectionTarget
     | {
         type_id?: string
         status?: string
@@ -1138,13 +1178,15 @@ export async function fetchAdminRecords(
     q?: string
     page?: number
     page_size?: number
-  }
+  },
+  signal?: AbortSignal
 ) {
   const payload = await apiRequest<PagedResult<RedeemRecordGroup>>(
     `/api/redeem/admin/records${createQuery(params)}`,
     {
       method: "GET",
       token,
+      signal,
     }
   )
   return payload.data

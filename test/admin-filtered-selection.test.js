@@ -59,9 +59,11 @@ test("inventory filtered selection uses the same filters as the paged list", () 
   const filters = { type_id: type.id, protocol: "graph", q: "match" };
   const page = db.getRedeemInventoryPaged(filters);
   const ids = db.getRedeemInventoryIds(filters);
+  const total = db.getRedeemInventorySelectionCount(filters);
 
   assert.deepEqual(ids, page.items.map((item) => item.id));
   assert.equal(ids.length, 1);
+  assert.equal(total, ids.length);
   assert.deepEqual(page.items[0].mail_protocols, ["graph"]);
 });
 
@@ -90,9 +92,11 @@ test("code filtered selection uses status, search, and quantity filters", () => 
   };
   const page = db.getRedeemCodesPaged(filters);
   const ids = db.getRedeemCodeIds(filters);
+  const total = db.getRedeemCodeSelectionCount(filters);
 
   assert.deepEqual(ids, [matching.id]);
   assert.deepEqual(ids, page.items.map((item) => item.id));
+  assert.equal(total, ids.length);
 });
 
 test("selected item readers support more IDs than a single SQL parameter batch", () => {
