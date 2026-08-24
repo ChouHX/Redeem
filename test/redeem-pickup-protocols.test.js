@@ -88,6 +88,28 @@ test("redeeming keeps every pickup protocol the account supports", () => {
   assert.deepEqual(inventory.mail_protocols, ["imap", "graph"]);
 });
 
+test("an import without an explicit protocol keeps all protocols allowed by the type", () => {
+  const type = createDualProtocolType();
+  const parsed = parseInventoryImportText({
+    text: "default-dual@example.com----pass----client----refresh",
+    field_schema: type.field_schema,
+    import_delimiter: type.import_delimiter,
+  });
+  db.importRedeemInventory({
+    type_id: type.id,
+    items: parsed.items,
+  });
+  const [code] = db.createRedeemCodes({
+    type_id: type.id,
+    count: 1,
+    quantity: 1,
+  });
+
+  const result = db.redeemByCode({ code: code.code });
+
+  assert.deepEqual(result.inventories[0].mail_protocols, ["imap", "graph"]);
+});
+
 test("rollback returns the account to stock with both protocols intact", () => {
   const type = createDualProtocolType();
   importDualProtocolAccount(

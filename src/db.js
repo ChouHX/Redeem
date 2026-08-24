@@ -1190,9 +1190,10 @@ export function importRedeemInventory({
   const allowedProtocols = normalizeMailProtocols(type.mail_protocols, [
     type.mail_protocol,
   ]);
-  const pickupProtocols = normalizeMailProtocols(mail_protocols, [
-    type.mail_protocol,
-  ]);
+  const pickupProtocols = normalizeMailProtocols(
+    mail_protocols,
+    allowedProtocols,
+  );
   if (
     pickupProtocols.some((protocol) => !allowedProtocols.includes(protocol))
   ) {

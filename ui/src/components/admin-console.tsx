@@ -575,7 +575,7 @@ export function AdminConsole() {
   const [inventoryImportMode, setInventoryImportMode] = useState("append")
   const [inventoryImportProtocols, setInventoryImportProtocols] = useState<
     MailProtocol[]
-  >(["imap"])
+  >([])
   const [inventoryImportText, setInventoryImportText] = useState("")
   const [inventoryImportFile, setInventoryImportFile] = useState<File | null>(
     null
@@ -1029,6 +1029,20 @@ export function AdminConsole() {
         ? [...new Set([...current, protocol])]
         : current.filter((item) => item !== protocol)
     )
+  }
+
+  function openInventoryImportDialog() {
+    const selectedType = inventoryImportType || types[0]
+    if (selectedType) {
+      setInventoryImportTypeId(String(selectedType.id))
+      setInventoryImportProtocols(
+        normalizeMailProtocols(
+          selectedType.mail_protocols,
+          selectedType.mail_protocol
+        )
+      )
+    }
+    setInventoryImportDialogOpen(true)
   }
 
   function updateAdSlotField(
@@ -2128,7 +2142,7 @@ export function AdminConsole() {
                 <CardAction className="flex flex-wrap gap-2">
                   <Button
                     size="sm"
-                    onClick={() => setInventoryImportDialogOpen(true)}
+                    onClick={openInventoryImportDialog}
                   >
                     <PackagePlusIcon data-icon="inline-start" />
                     导入库存
