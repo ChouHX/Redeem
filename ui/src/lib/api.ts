@@ -178,41 +178,6 @@ export type RedeemOrderQueryResult = {
   items: RedeemedItem[]
 }
 
-export type GeminiProTaskStatus = 1 | 2 | 3 | 4 | 5
-
-export type GeminiProTaskItem = {
-  id: number
-  card_code: string
-  account_info: string
-  status: GeminiProTaskStatus
-  result: string
-  submitted_at: string | null
-  completed_at: string | null
-  you_hui_url: string
-  type: number
-  is_you_hui_url: number
-  status_desc: string
-}
-
-export type GeminiProCardCodeObj = {
-  total_quota: number
-  used_quota: number
-  type: number
-}
-
-export type GeminiProTasksResult = {
-  items: GeminiProTaskItem[]
-  card_code_obj: GeminiProCardCodeObj
-  total: number
-  page: number
-  page_size: number
-}
-
-export type GeminiProSubmitPayload = {
-  card: string
-  accounts: string[]
-}
-
 export type AdminOverview = {
   type_count: number
   total_inventory_count: number
@@ -601,33 +566,6 @@ export async function accessMailboxByCode(
       page: params.page,
       page_size: params.page_size,
     },
-  })
-  return payload
-}
-
-export async function fetchGeminiProTasks(
-  cardCode: string,
-  params: {
-    page?: number
-    page_size?: number
-  } = {}
-) {
-  const payload = await apiRequest<GeminiProTasksResult>(
-    `/api/geminipro/tasks/${encodeURIComponent(cardCode)}${createQuery({
-      page: params.page,
-      page_size: params.page_size,
-    })}`,
-    {
-      method: "GET",
-    }
-  )
-  return payload.data
-}
-
-export async function submitGeminiProTasks(body: GeminiProSubmitPayload) {
-  const payload = await apiRequest<unknown>("/api/geminipro/submit", {
-    method: "POST",
-    body,
   })
   return payload
 }
