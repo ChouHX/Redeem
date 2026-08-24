@@ -32,10 +32,12 @@ import {
   getMailboxAccountFromInventory,
   getRedeemAdminOverview,
   getRedeemCodesPaged,
+  getRedeemCodeIds,
   getRedeemEmailTypeById,
   getRedeemEmailTypes,
   getRedeemInventoryByIds,
   getRedeemInventoryPaged,
+  getRedeemInventoryIds,
   getRedeemRecordsPaged,
   getSystemConfig,
   getSystemConfigValue,
@@ -1140,6 +1142,16 @@ app.get("/api/redeem/admin/inventory", requireAdmin, (req, res) => {
   res.json(ok(result, `共 ${result.total} 条库存记录`));
 });
 
+app.get("/api/redeem/admin/inventory/selection", requireAdmin, (req, res) => {
+  const ids = getRedeemInventoryIds({
+    type_id: req.query.type_id,
+    status: String(req.query.status || ""),
+    protocol: String(req.query.protocol || ""),
+    q: String(req.query.q || ""),
+  });
+  res.json(ok({ ids, total: ids.length }, `已匹配 ${ids.length} 条库存记录`));
+});
+
 app.post(
   "/api/redeem/admin/inventory/import",
   requireAdmin,
@@ -1377,6 +1389,17 @@ app.get("/api/redeem/admin/codes", requireAdmin, (req, res) => {
     page_size: parseBoundedInt(req.query.page_size, 10, { min: 1, max: 100 }),
   });
   res.json(ok(result, `共 ${result.total} 个兑换码`));
+});
+
+app.get("/api/redeem/admin/codes/selection", requireAdmin, (req, res) => {
+  const ids = getRedeemCodeIds({
+    type_id: req.query.type_id,
+    status: String(req.query.status || ""),
+    q: String(req.query.q || ""),
+    min_quantity: req.query.min_quantity,
+    max_quantity: req.query.max_quantity,
+  });
+  res.json(ok({ ids, total: ids.length }, `已匹配 ${ids.length} 个兑换码`));
 });
 
 app.post("/api/redeem/admin/codes/generate", requireAdmin, (req, res) => {

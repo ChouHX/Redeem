@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   ClockIcon,
   CopyIcon,
@@ -177,6 +177,11 @@ function ResultOutputCard({
   redeemedAt,
   items,
   downloadPrefix,
+  emphasized = false,
+  protocols = [],
+  retentionHours,
+  expiresAt,
+  onOpenReminder,
 }: {
   badgeLabel: string
   title: string
@@ -187,6 +192,11 @@ function ResultOutputCard({
   redeemedAt: string
   items: ResultLineItem[]
   downloadPrefix: string
+  emphasized?: boolean
+  protocols?: MailProtocol[]
+  retentionHours?: number
+  expiresAt?: string
+  onOpenReminder?: () => void
 }) {
   const visibleItems = items.slice(0, MAX_VISIBLE_RESULT_ITEMS)
   const hiddenItemCount = Math.max(0, items.length - MAX_VISIBLE_RESULT_ITEMS)
@@ -198,38 +208,146 @@ function ResultOutputCard({
   }
 
   return (
-    <Card className="border border-border/70 bg-card/97">
-      <CardHeader className="border-b border-border/70">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge>{badgeLabel}</Badge>
-          <Badge variant="outline">{typeName}</Badge>
-          <Badge variant="outline">数量 {itemCount}</Badge>
-          <Badge variant="secondary">{formatDateTime(redeemedAt)}</Badge>
-        </div>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
+    <Card
+      className={
+        emphasized
+          ? "overflow-hidden border border-primary/50 bg-card/98 shadow-xl shadow-primary/8"
+          : "border border-border/70 bg-card/97"
+      }
+    >
+      <CardHeader
+        className={
+          emphasized
+            ? "gap-4 border-b border-primary/25 bg-gradient-to-br from-primary/14 via-card to-card py-6"
+            : "border-b border-border/70"
+        }
+      >
+        {emphasized ? (
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                <ShieldCheckIcon className="size-5" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <CardTitle className="font-heading text-2xl md:text-3xl">
+                  {title}
+                </CardTitle>
+                <CardDescription className="max-w-2xl text-sm">
+                  {description}
+                </CardDescription>
+              </div>
+            </div>
+            <Badge className="w-fit px-3 py-1 text-xs">{badgeLabel}</Badge>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge>{badgeLabel}</Badge>
+              <Badge variant="outline">{typeName}</Badge>
+              <Badge variant="outline">数量 {itemCount}</Badge>
+              <Badge variant="secondary">{formatDateTime(redeemedAt)}</Badge>
+            </div>
+            <CardTitle>{title}</CardTitle>
+            <CardDescription>{description}</CardDescription>
+          </>
+        )}
+
+        {emphasized ? (
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="border border-border/70 bg-background/75 px-3 py-3">
+              <p className="text-[11px] text-muted-foreground">发放类型</p>
+              <p className="mt-1 text-sm font-medium text-foreground">
+                {typeName}
+              </p>
+            </div>
+            <div className="border border-border/70 bg-background/75 px-3 py-3">
+              <p className="text-[11px] text-muted-foreground">发放数量</p>
+              <p className="mt-1 text-sm font-medium text-foreground">
+                {itemCount} 条账号数据
+              </p>
+            </div>
+            <div className="border border-border/70 bg-background/75 px-3 py-3">
+              <p className="text-[11px] text-muted-foreground">兑换时间</p>
+              <p className="mt-1 text-sm font-medium text-foreground">
+                {formatDateTime(redeemedAt)}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {emphasized ? (
+          <div className="flex flex-col gap-3 border border-primary/25 bg-primary/7 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-foreground">
+                  支持协议
+                </span>
+                {protocols.length ? (
+                  protocols.map((protocol) => (
+                    <Badge key={protocol} variant="secondary">
+                      <MailIcon data-icon="inline-start" />
+                      {MAIL_PROTOCOL_INFO[protocol].label}
+                    </Badge>
+                  ))
+                ) : (
+                  <Badge variant="outline">未标注</Badge>
+                )}
+              </div>
+              <p className="flex flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
+                <ClockIcon className="size-3.5 shrink-0" />
+                <span>
+                  数据将在 {retentionHours || 24} 小时后删除
+                  {expiresAt ? `（${formatDateTime(expiresAt)}）` : ""}，请立即保存。
+                </span>
+              </p>
+            </div>
+            {onOpenReminder ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={onOpenReminder}
+              >
+                查看完整提醒
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-wrap justify-end gap-2">
+      <CardContent className="flex flex-col gap-4 py-5">
+        <div
+          className={
+            emphasized
+              ? "flex flex-col gap-2 sm:flex-row"
+              : "flex flex-wrap justify-end gap-2"
+          }
+        >
+          <Button
+            variant={emphasized ? "default" : "outline"}
+            size={emphasized ? "lg" : "sm"}
+            className={emphasized ? "sm:flex-1" : undefined}
+            onClick={() => void copyTextToClipboard(fullText, "结果内容")}
+          >
+            <CopyIcon data-icon="inline-start" />
+            {emphasized ? "复制全部结果" : "复制结果"}
+          </Button>
+          <Button
+            variant={emphasized ? "secondary" : "outline"}
+            size={emphasized ? "lg" : "sm"}
+            className={emphasized ? "sm:flex-1" : undefined}
+            onClick={handleDownload}
+          >
+            <DownloadIcon data-icon="inline-start" />
+            {emphasized ? "下载 TXT 保存" : "下载 TXT"}
+          </Button>
           <Button
             variant="outline"
-            size="sm"
+            size={emphasized ? "lg" : "sm"}
             onClick={() => void copyTextToClipboard(code, "兑换码")}
           >
             <CopyIcon data-icon="inline-start" />
             复制卡密
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void copyTextToClipboard(fullText, "结果内容")}
-          >
-            <CopyIcon data-icon="inline-start" />
-            复制结果
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleDownload}>
-            <DownloadIcon data-icon="inline-start" />
-            下载 TXT
           </Button>
         </div>
 
@@ -244,23 +362,38 @@ function ResultOutputCard({
           </Alert>
         ) : null}
 
-        <Textarea
-          value={visibleText}
-          readOnly
-          rows={Math.max(
-            6,
-            Math.min(MAX_VISIBLE_RESULT_ITEMS + 1, visibleItems.length + 1)
-          )}
-          wrap="off"
-          spellCheck={false}
-          className="min-h-64 resize-y overflow-x-scroll overflow-y-auto font-mono text-xs leading-6"
-        />
+        <div className={emphasized ? "flex flex-col gap-2" : undefined}>
+          {emphasized ? (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-foreground">账号数据</p>
+              <p className="text-xs text-muted-foreground">
+                请复制或下载后妥善保存
+              </p>
+            </div>
+          ) : null}
+          <Textarea
+            value={visibleText}
+            readOnly
+            rows={Math.max(
+              6,
+              Math.min(MAX_VISIBLE_RESULT_ITEMS + 1, visibleItems.length + 1)
+            )}
+            wrap="off"
+            spellCheck={false}
+            className={`min-h-64 resize-y overflow-x-scroll overflow-y-auto font-mono text-xs leading-6 ${
+              emphasized
+                ? "border-primary/35 bg-background shadow-inner"
+                : ""
+            }`}
+          />
+        </div>
       </CardContent>
     </Card>
   )
 }
 
 export function RedeemConsole() {
+  const redeemResultRef = useRef<HTMLDivElement | null>(null)
   const [catalog, setCatalog] = useState<RedeemCatalog["types"]>([])
   const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
   const [faq, setFaq] = useState<FaqConfig | null>(null)
@@ -545,6 +678,22 @@ export function RedeemConsole() {
   const redeemRetentionHours = exchangeResult?.access_ttl_hours || 24
   const redeemExpiresAt = exchangeResult?.access_expires_at || ""
 
+  function revealRedeemResult() {
+    window.requestAnimationFrame(() => {
+      redeemResultRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      })
+    })
+  }
+
+  function handleRedeemReminderOpenChange(open: boolean) {
+    setRedeemReminderOpen(open)
+    if (!open) {
+      revealRedeemResult()
+    }
+  }
+
   function handleReminderDownload() {
     if (!exchangeResult) {
       return
@@ -556,6 +705,7 @@ export function RedeemConsole() {
       "redeem_result"
     )
     setRedeemReminderOpen(false)
+    revealRedeemResult()
   }
 
   return (
@@ -713,49 +863,24 @@ export function RedeemConsole() {
               </Card>
 
               {exchangeResult ? (
-                <>
-                  <Alert>
-                    <ClockIcon />
-                    <AlertTitle>
-                      取件协议
-                      {redeemProtocols.length
-                        ? `：${redeemProtocols
-                            .map(
-                              (protocol) => MAIL_PROTOCOL_INFO[protocol].label
-                            )
-                            .join(" / ")}`
-                        : "未标注"}
-                      ，数据 {redeemRetentionHours} 小时后自动删除
-                    </AlertTitle>
-                    <AlertDescription>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        {redeemExpiresAt ? (
-                          <span>
-                            删除时间：{formatDateTime(redeemExpiresAt)}
-                          </span>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="underline underline-offset-3 hover:text-foreground"
-                          onClick={() => setRedeemReminderOpen(true)}
-                        >
-                          查看完整提醒
-                        </button>
-                      </div>
-                    </AlertDescription>
-                  </Alert>
+                <div ref={redeemResultRef} className="scroll-mt-4">
                   <ResultOutputCard
-                    badgeLabel="已发放"
-                    title="兑换结果"
-                    description="结果按整行格式展示，可直接复制或下载为 TXT。"
+                    badgeLabel="兑换成功 · 已发放"
+                    title="账号已成功发放"
+                    description="请立即复制或下载账号数据，并确认本次账号支持的取件协议。"
                     code={exchangeResult.code}
                     typeName={exchangeResult.type.name}
                     itemCount={exchangeResult.redeemed_count}
                     redeemedAt={exchangeResult.redeemed_at}
                     items={exchangeResult.items}
                     downloadPrefix="redeem_result"
+                    emphasized
+                    protocols={redeemProtocols}
+                    retentionHours={redeemRetentionHours}
+                    expiresAt={redeemExpiresAt}
+                    onOpenReminder={() => setRedeemReminderOpen(true)}
                   />
-                </>
+                </div>
               ) : null}
             </TabsContent>
 
@@ -1173,7 +1298,7 @@ export function RedeemConsole() {
 
       <Dialog
         open={redeemReminderOpen && Boolean(exchangeResult)}
-        onOpenChange={setRedeemReminderOpen}
+        onOpenChange={handleRedeemReminderOpenChange}
       >
         <DialogContent className="max-w-[min(96vw,34rem)] p-0 sm:max-w-[min(96vw,34rem)]">
           <DialogHeader className="border-b border-border/70 px-5 py-4">

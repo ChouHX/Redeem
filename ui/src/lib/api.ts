@@ -233,6 +233,11 @@ export type PagedResult<T> = {
   page_size: number
 }
 
+export type FilteredSelectionResult = {
+  ids: number[]
+  total: number
+}
+
 export type RedeemInventoryItem = {
   id: number
   type_id: number
@@ -755,6 +760,22 @@ export async function fetchAdminInventory(
   return payload.data
 }
 
+export async function fetchAdminInventorySelection(
+  token: string,
+  params: {
+    type_id?: string
+    status?: string
+    protocol?: MailProtocol
+    q?: string
+  }
+) {
+  const payload = await apiRequest<FilteredSelectionResult>(
+    `/api/redeem/admin/inventory/selection${createQuery(params)}`,
+    { method: "GET", token }
+  )
+  return payload.data
+}
+
 export async function importAdminInventory(
   token: string,
   body: {
@@ -952,6 +973,23 @@ export async function fetchAdminCodes(
       method: "GET",
       token,
     }
+  )
+  return payload.data
+}
+
+export async function fetchAdminCodeSelection(
+  token: string,
+  params: {
+    type_id?: string
+    status?: string
+    q?: string
+    min_quantity?: string
+    max_quantity?: string
+  }
+) {
+  const payload = await apiRequest<FilteredSelectionResult>(
+    `/api/redeem/admin/codes/selection${createQuery(params)}`,
+    { method: "GET", token }
   )
   return payload.data
 }

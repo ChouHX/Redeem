@@ -58,7 +58,9 @@ import {
   deleteAdminInventory,
   deleteAdminType,
   fetchAdminCodes,
+  fetchAdminCodeSelection,
   fetchAdminInventory,
+  fetchAdminInventorySelection,
   fetchAdminOverview,
   fetchAdminRecordDetail,
   fetchAdminRecords,
@@ -542,8 +544,11 @@ export function AdminConsole() {
   const [inventorySubmitting, setInventorySubmitting] = useState(false)
   const [inventoryBatchSubmitting, setInventoryBatchSubmitting] =
     useState(false)
+  const [inventorySelectionLoading, setInventorySelectionLoading] =
+    useState(false)
   const [codeSubmitting, setCodeSubmitting] = useState(false)
   const [codeBatchSubmitting, setCodeBatchSubmitting] = useState(false)
+  const [codeSelectionLoading, setCodeSelectionLoading] = useState(false)
   const [passwordSubmitting, setPasswordSubmitting] = useState(false)
   const [adsSubmitting, setAdsSubmitting] = useState(false)
   const [faqSubmitting, setFaqSubmitting] = useState(false)
@@ -1340,6 +1345,27 @@ export function AdminConsole() {
     })
   }
 
+  async function selectAllFilteredInventory() {
+    setInventorySelectionLoading(true)
+    try {
+      const selection = await fetchAdminInventorySelection(token, {
+        type_id: inventoryFilters.typeId,
+        status: inventoryFilters.status,
+        protocol: inventoryFilters.protocol || undefined,
+        q: inventoryFilters.q,
+      })
+      setSelectedInventoryIds(selection.ids)
+      showSuccessToast(
+        "已选择筛选结果",
+        `已选择当前筛选条件下的 ${selection.total} 条库存记录。`
+      )
+    } catch (error) {
+      handleApiError(error, "选择筛选结果失败")
+    } finally {
+      setInventorySelectionLoading(false)
+    }
+  }
+
   async function handleDeleteInventory(inventoryId: number) {
     const confirmed = window.confirm(
       `确定删除库存记录 #${inventoryId} 吗？该操作会从库存列表中移除这条数据。`
@@ -1509,6 +1535,28 @@ export function AdminConsole() {
       }
       return Array.from(next)
     })
+  }
+
+  async function selectAllFilteredCodes() {
+    setCodeSelectionLoading(true)
+    try {
+      const selection = await fetchAdminCodeSelection(token, {
+        type_id: codeFilters.typeId,
+        status: codeFilters.status,
+        q: codeFilters.q,
+        min_quantity: codeFilters.minQuantity,
+        max_quantity: codeFilters.maxQuantity,
+      })
+      setSelectedCodeIds(selection.ids)
+      showSuccessToast(
+        "已选择筛选结果",
+        `已选择当前筛选条件下的 ${selection.total} 个兑换码。`
+      )
+    } catch (error) {
+      handleApiError(error, "选择筛选结果失败")
+    } finally {
+      setCodeSelectionLoading(false)
+    }
   }
 
   async function toggleCodeStatus(item: RedeemCodeItem) {
@@ -2159,6 +2207,25 @@ export function AdminConsole() {
                       </DropdownMenuLabel>
                       <DropdownMenuGroup>
                         <DropdownMenuItem
+                          disabled={inventorySelectionLoading}
+                          onSelect={() => {
+                            void selectAllFilteredInventory()
+                          }}
+                        >
+                          {inventorySelectionLoading
+                            ? "正在选择筛选结果..."
+                            : "全选当前筛选结果"}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={!selectedInventoryIds.length}
+                          onSelect={() => setSelectedInventoryIds([])}
+                        >
+                          清空选择
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem
                           onSelect={openInventoryBatchEditDialog}
                         >
                           批量编辑
@@ -2526,6 +2593,25 @@ export function AdminConsole() {
                       <DropdownMenuLabel>
                         已选 {selectedCodeIds.length} 个兑换码
                       </DropdownMenuLabel>
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem
+                          disabled={codeSelectionLoading}
+                          onSelect={() => {
+                            void selectAllFilteredCodes()
+                          }}
+                        >
+                          {codeSelectionLoading
+                            ? "正在选择筛选结果..."
+                            : "全选当前筛选结果"}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={!selectedCodeIds.length}
+                          onSelect={() => setSelectedCodeIds([])}
+                        >
+                          清空选择
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
+                      <DropdownMenuSeparator />
                       <DropdownMenuGroup>
                         <DropdownMenuItem onSelect={openCodeBatchEditDialog}>
                           批量编辑

@@ -490,6 +490,62 @@ function buildRedeemCodesWhere({
   };
 }
 
+function buildRedeemInventoryWhere({
+  type_id = "",
+  status = "",
+  protocol = "",
+  q = "",
+} = {}) {
+  const conditions = [];
+  const params = [];
+
+  if (type_id) {
+    conditions.push("inventory.type_id = ?");
+    params.push(Number(type_id));
+  }
+
+  if (
+    status === "available" ||
+    status === "unavailable" ||
+    status === "redeemed"
+  ) {
+    conditions.push("inventory.status = ?");
+    params.push(status);
+  }
+
+  if (protocol === "imap" || protocol === "graph") {
+    conditions.push(
+      `EXISTS (
+        SELECT 1
+        FROM json_each(inventory.pickup_protocols)
+        WHERE value = ?
+      )`,
+    );
+    params.push(protocol);
+  }
+
+  if (q) {
+    const normalizedQuery = String(q).trim().toLowerCase();
+    if (Array.from(normalizedQuery).length >= 3) {
+      conditions.push(
+        `inventory.id IN (
+          SELECT rowid
+          FROM redeem_inventory_fts
+          WHERE search_text LIKE ?
+        )`,
+      );
+    } else {
+      conditions.push("inventory.search_text LIKE ?");
+    }
+    params.push(`%${normalizedQuery}%`);
+  }
+
+  return {
+    where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "",
+    params,
+  };
+}
+
 function rowToRedeemCode(row) {
   if (!row) {
     return null;
@@ -1092,51 +1148,12 @@ export function getRedeemInventoryPaged({
 } = {}) {
   const safePage = clampPositiveInt(page, 1);
   const safePageSize = clampPositiveInt(page_size, 10, 100);
-  const conditions = [];
-  const params = [];
-
-  if (type_id) {
-    conditions.push("inventory.type_id = ?");
-    params.push(Number(type_id));
-  }
-
-  if (
-    status === "available" ||
-    status === "unavailable" ||
-    status === "redeemed"
-  ) {
-    conditions.push("inventory.status = ?");
-    params.push(status);
-  }
-
-  if (protocol === "imap" || protocol === "graph") {
-    conditions.push(
-      `EXISTS (
-        SELECT 1
-        FROM json_each(inventory.pickup_protocols)
-        WHERE value = ?
-      )`,
-    );
-    params.push(protocol);
-  }
-
-  if (q) {
-    const normalizedQuery = String(q).trim().toLowerCase();
-    if (Array.from(normalizedQuery).length >= 3) {
-      conditions.push(
-        `inventory.id IN (
-          SELECT rowid
-          FROM redeem_inventory_fts
-          WHERE search_text LIKE ?
-        )`,
-      );
-    } else {
-      conditions.push("inventory.search_text LIKE ?");
-    }
-    params.push(`%${normalizedQuery}%`);
-  }
-
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const { where, params } = buildRedeemInventoryWhere({
+    type_id,
+    status,
+    protocol,
+    q,
+  });
   const totalRow = db
     .prepare(
       `
@@ -1172,6 +1189,21 @@ export function getRedeemInventoryPaged({
     page: safePage,
     page_size: safePageSize,
   };
+}
+
+export function getRedeemInventoryIds(filters = {}) {
+  const { where, params } = buildRedeemInventoryWhere(filters);
+  return db
+    .prepare(
+      `
+        SELECT inventory.id
+        FROM redeem_inventory inventory
+        ${where}
+        ORDER BY inventory.id DESC
+      `,
+    )
+    .all(...params)
+    .map((row) => Number(row.id));
 }
 
 export function importRedeemInventory({
@@ -1733,24 +1765,30 @@ export function getRedeemInventoryByIds(ids) {
     return [];
   }
 
-  const placeholders = targets.map(() => "?").join(", ");
-  const rows = db
-    .prepare(
-      `
-        SELECT
-          inventory.*,
-          types.name AS type_name,
-          types.slug AS type_slug,
-          types.field_schema,
-          types.mail_protocol,
-          types.import_delimiter
-        FROM redeem_inventory inventory
-        JOIN redeem_email_types types ON types.id = inventory.type_id
-        WHERE inventory.id IN (${placeholders})
-        ORDER BY inventory.id ASC
-      `,
-    )
-    .all(...targets);
+  const rows = [];
+  for (let index = 0; index < targets.length; index += 500) {
+    const chunk = targets.slice(index, index + 500);
+    const placeholders = chunk.map(() => "?").join(", ");
+    rows.push(
+      ...db
+        .prepare(
+          `
+            SELECT
+              inventory.*,
+              types.name AS type_name,
+              types.slug AS type_slug,
+              types.field_schema,
+              types.mail_protocol,
+              types.import_delimiter
+            FROM redeem_inventory inventory
+            JOIN redeem_email_types types ON types.id = inventory.type_id
+            WHERE inventory.id IN (${placeholders})
+          `,
+        )
+        .all(...chunk),
+    );
+  }
+  rows.sort((left, right) => Number(left.id) - Number(right.id));
 
   return rows.map(rowToRedeemInventory);
 }
@@ -1807,6 +1845,21 @@ export function getRedeemCodesPaged({
   };
 }
 
+export function getRedeemCodeIds(filters = {}) {
+  const { where, params } = buildRedeemCodesWhere(filters);
+  return db
+    .prepare(
+      `
+        SELECT codes.id
+        FROM redeem_codes codes
+        ${where}
+        ORDER BY codes.id DESC
+      `,
+    )
+    .all(...params)
+    .map((row) => Number(row.id));
+}
+
 export function getRedeemCodesByIds(ids) {
   const targets = [
     ...new Set(
@@ -1819,21 +1872,27 @@ export function getRedeemCodesByIds(ids) {
     return [];
   }
 
-  const placeholders = targets.map(() => "?").join(", ");
-  const rows = db
-    .prepare(
-      `
-        SELECT
-          codes.*,
-          types.name AS type_name,
-          types.slug AS type_slug
-        FROM redeem_codes codes
-        JOIN redeem_email_types types ON types.id = codes.type_id
-        WHERE codes.id IN (${placeholders})
-        ORDER BY codes.id ASC
-      `,
-    )
-    .all(...targets);
+  const rows = [];
+  for (let index = 0; index < targets.length; index += 500) {
+    const chunk = targets.slice(index, index + 500);
+    const placeholders = chunk.map(() => "?").join(", ");
+    rows.push(
+      ...db
+        .prepare(
+          `
+            SELECT
+              codes.*,
+              types.name AS type_name,
+              types.slug AS type_slug
+            FROM redeem_codes codes
+            JOIN redeem_email_types types ON types.id = codes.type_id
+            WHERE codes.id IN (${placeholders})
+          `,
+        )
+        .all(...chunk),
+    );
+  }
+  rows.sort((left, right) => Number(left.id) - Number(right.id));
 
   return rows.map(rowToRedeemCode);
 }
