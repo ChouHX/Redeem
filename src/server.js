@@ -1199,9 +1199,12 @@ app.post(
         mail_protocols: mailProtocols,
       });
 
+      const protocolUpdateMessage = imported.protocols_updated_count
+        ? `，补全取件协议 ${imported.protocols_updated_count} 条`
+        : "";
       const message = parsed.error_count
-        ? `库存导入完成，新增 ${imported.added_count} 条，跳过 ${imported.skipped_count} 条，解析错误 ${parsed.error_count} 条`
-        : `库存导入完成，新增 ${imported.added_count} 条，跳过 ${imported.skipped_count} 条`;
+        ? `库存导入完成，新增 ${imported.added_count} 条${protocolUpdateMessage}，重复 ${imported.skipped_count} 条，解析错误 ${parsed.error_count} 条`
+        : `库存导入完成，新增 ${imported.added_count} 条${protocolUpdateMessage}，重复 ${imported.skipped_count} 条`;
 
       res.json(
         ok(

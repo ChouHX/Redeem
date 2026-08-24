@@ -110,6 +110,39 @@ test("an import without an explicit protocol keeps all protocols allowed by the 
   assert.deepEqual(result.inventories[0].mail_protocols, ["imap", "graph"]);
 });
 
+test("reimporting an existing account repairs narrowed protocol metadata", () => {
+  const type = createDualProtocolType();
+  const parsed = parseInventoryImportText({
+    text: "repair-dual@example.com----pass----client----refresh",
+    field_schema: type.field_schema,
+    import_delimiter: type.import_delimiter,
+  });
+  db.importRedeemInventory({
+    type_id: type.id,
+    items: parsed.items,
+    mail_protocols: ["imap"],
+  });
+  const [code] = db.createRedeemCodes({
+    type_id: type.id,
+    count: 1,
+    quantity: 1,
+  });
+  const redeemed = db.redeemByCode({ code: code.code });
+  assert.deepEqual(redeemed.inventories[0].mail_protocols, ["imap"]);
+
+  const repaired = db.importRedeemInventory({
+    type_id: type.id,
+    items: parsed.items,
+    mail_protocols: ["imap", "graph"],
+  });
+
+  assert.equal(repaired.added_count, 0);
+  assert.equal(repaired.protocols_updated_count, 1);
+  assert.equal(repaired.skipped_count, 1);
+  const [record] = db.getRedeemRecordsByCodeId(redeemed.code.id);
+  assert.deepEqual(record.mail_protocols, ["imap", "graph"]);
+});
+
 test("rollback returns the account to stock with both protocols intact", () => {
   const type = createDualProtocolType();
   importDualProtocolAccount(

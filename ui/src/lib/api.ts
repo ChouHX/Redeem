@@ -373,6 +373,7 @@ export type InventoryImportResult = {
     mode: string
     cleared_count: number
     added_count: number
+    protocols_updated_count: number
     skipped_count: number
     total_count: number
   }

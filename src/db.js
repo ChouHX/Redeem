@@ -1202,6 +1202,7 @@ export function importRedeemInventory({
   const tx = db.transaction((targetType, nextItems, nextMode) => {
     let cleared = 0;
     let added = 0;
+    let protocolsUpdated = 0;
     let skipped = 0;
 
     if (nextMode === "replace_available") {
@@ -1257,14 +1258,26 @@ export function importRedeemInventory({
       } else {
         const existing = existingStmt.get(targetType.id, serializedValue);
         if (existing) {
+          const existingProtocols = normalizeMailProtocols(
+            existing.pickup_protocols,
+            [],
+          );
           const merged = normalizeMailProtocols(
             [
-              ...normalizeMailProtocols(existing.pickup_protocols, []),
+              ...existingProtocols,
               ...pickupProtocols,
             ],
             pickupProtocols,
           );
-          mergeProtocolsStmt.run(JSON.stringify(merged), existing.id);
+          if (
+            merged.length !== existingProtocols.length ||
+            merged.some((protocol) => !existingProtocols.includes(protocol))
+          ) {
+            protocolsUpdated += mergeProtocolsStmt.run(
+              JSON.stringify(merged),
+              existing.id,
+            ).changes;
+          }
         }
         skipped += 1;
       }
@@ -1274,6 +1287,7 @@ export function importRedeemInventory({
       mode: nextMode,
       cleared_count: cleared,
       added_count: added,
+      protocols_updated_count: protocolsUpdated,
       skipped_count: skipped,
       total_count: nextItems.length,
     };
