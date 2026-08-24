@@ -12,7 +12,11 @@ const dbPath = path.join(
 process.env.DB_PATH = dbPath;
 
 const db = await import("../src/db.js");
-const { parseInventoryImportText } = await import("../src/redeem.js");
+const {
+  collectRedeemedMailProtocols,
+  formatRedeemedInventory,
+  parseInventoryImportText,
+} = await import("../src/redeem.js");
 
 after(() => {
   db.closeDb();
@@ -59,6 +63,20 @@ test("redeeming keeps every pickup protocol the account supports", () => {
   const result = db.redeemByCode({ code: code.code, requester_ip: "192.0.2.1" });
 
   assert.deepEqual(result.inventories[0].mail_protocols, ["imap", "graph"]);
+  assert.deepEqual(
+    collectRedeemedMailProtocols(result.inventories, result.type),
+    ["imap", "graph"],
+  );
+
+  const publicItem = formatRedeemedInventory(
+    {
+      ...result.type,
+      mail_protocols: result.inventories[0].mail_protocols,
+    },
+    result.inventories[0].payload,
+  );
+  assert.deepEqual(publicItem.mail_protocols, ["imap", "graph"]);
+  assert.deepEqual(publicItem.type.mail_protocols, ["imap", "graph"]);
 
   const [record] = db.getRedeemRecordsByCodeId(result.code.id);
   assert.deepEqual(record.mail_protocols, ["imap", "graph"]);
@@ -128,4 +146,31 @@ test("a narrower account keeps its single protocol", () => {
   const result = db.redeemByCode({ code: code.code, requester_ip: "192.0.2.3" });
 
   assert.deepEqual(result.inventories[0].mail_protocols, ["graph"]);
+  assert.deepEqual(
+    collectRedeemedMailProtocols(result.inventories, result.type),
+    ["graph"],
+  );
+});
+
+test("protocol aggregation falls back to the type only for legacy rows without metadata", () => {
+  assert.deepEqual(
+    collectRedeemedMailProtocols(
+      [{ mail_protocols: [] }],
+      { mail_protocols: ["imap", "graph"] },
+    ),
+    ["imap", "graph"],
+  );
+});
+
+test("protocol aggregation returns the union across all redeemed accounts", () => {
+  assert.deepEqual(
+    collectRedeemedMailProtocols(
+      [
+        { mail_protocols: ["imap"] },
+        { mail_protocols: ["imap", "graph"] },
+      ],
+      { mail_protocols: ["imap", "graph"] },
+    ),
+    ["imap", "graph"],
+  );
 });

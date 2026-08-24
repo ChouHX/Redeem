@@ -67,6 +67,7 @@ import {
 } from "./graph.js";
 import {
   parseMailboxAccountLine,
+  collectRedeemedMailProtocols,
   formatRedeemedInventory,
   normalizeMailProtocol,
   normalizeMailProtocols,
@@ -856,18 +857,6 @@ app.post("/api/redeem/exchange", (req, res) => {
           code: result.code.code,
           access_expires_at: getRedeemAccessExpiresAt(result.code.redeemed_at),
           access_ttl_hours: getRedeemAccessTtlHours(),
-          mail_protocols: normalizeMailProtocols(
-            result.inventories.flatMap(
-              (inventory) => inventory.mail_protocols || [],
-            ),
-            [result.type?.mail_protocol || "imap"],
-          ),
-          items: result.inventories.map((inventory) =>
-            formatRedeemedInventory(
-              { ...result.type, mail_protocols: inventory.mail_protocols },
-              inventory.payload,
-            ),
-          ),
           ...(result.inventories[0]
             ? formatRedeemedInventory(
                 {
@@ -877,6 +866,16 @@ app.post("/api/redeem/exchange", (req, res) => {
                 result.inventories[0].payload,
               )
             : {}),
+          mail_protocols: collectRedeemedMailProtocols(
+            result.inventories,
+            result.type,
+          ),
+          items: result.inventories.map((inventory) =>
+            formatRedeemedInventory(
+              { ...result.type, mail_protocols: inventory.mail_protocols },
+              inventory.payload,
+            ),
+          ),
         },
         "兑换成功",
       ),

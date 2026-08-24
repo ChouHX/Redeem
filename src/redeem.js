@@ -99,6 +99,19 @@ export function normalizeMailProtocols(value, fallback = ["imap"]) {
   return [...new Set(fallbackValues.map((item) => normalizeMailProtocol(item)))];
 }
 
+export function collectRedeemedMailProtocols(inventories = [], type = {}) {
+  const typeProtocols = normalizeMailProtocols(type?.mail_protocols, [
+    type?.mail_protocol || "imap",
+  ]);
+
+  return normalizeMailProtocols(
+    (Array.isArray(inventories) ? inventories : []).flatMap((inventory) =>
+      normalizeMailProtocols(inventory?.mail_protocols, []),
+    ),
+    typeProtocols,
+  );
+}
+
 function normalizeFieldKey(value, index) {
   const fallbackKey = `field_${index + 1}`;
   const normalized = String(value || fallbackKey)
@@ -320,15 +333,19 @@ export function formatRedeemedInventory(type, payload = {}) {
   const delimiter = String(type?.import_delimiter || "----");
   const normalizedPayload = normalizeInventoryPayload(fieldSchema, payload);
   const formattedLine = serializeInventoryPayload(fieldSchema, normalizedPayload, delimiter);
+  const mailProtocols = normalizeMailProtocols(type?.mail_protocols, [
+    type?.mail_protocol || "imap",
+  ]);
 
   return {
+    mail_protocols: mailProtocols,
     type: {
       id: type?.id ?? null,
       slug: type?.slug || "",
       name: type?.name || "",
       description: type?.description || "",
-      mail_protocol: normalizeMailProtocols(type?.mail_protocols, [type?.mail_protocol || "imap"])[0],
-      mail_protocols: normalizeMailProtocols(type?.mail_protocols, [type?.mail_protocol || "imap"]),
+      mail_protocol: mailProtocols[0],
+      mail_protocols: mailProtocols,
       import_delimiter: delimiter
     },
     fields: fieldSchema.map((field) => ({
