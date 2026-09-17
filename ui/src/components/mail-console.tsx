@@ -27,6 +27,7 @@ import {
   type MailMessage,
   type MailProtocol,
   type RedeemedItem,
+  type RedeemResultType,
   type TempMailAccount,
 } from "@/lib/api"
 import {
@@ -234,12 +235,13 @@ function parseAccountLine(
 
 function accountFromRedeemedItem(
   item: RedeemedItem,
-  index: number
+  index: number,
+  resultType?: RedeemResultType | null
 ): MailAccount | null {
   const protocols = normalizeProtocolList(
     item.mail_protocols,
-    normalizeProtocolList(item.type.mail_protocols, [
-      normalizeProtocol(item.type.mail_protocol),
+    normalizeProtocolList(resultType?.mail_protocols, [
+      normalizeProtocol(resultType?.mail_protocol),
     ])
   )
   const rawLine = String(
@@ -249,7 +251,7 @@ function accountFromRedeemedItem(
   if (parsed) {
     return {
       ...parsed,
-      label: item.type.name || `账号 ${index + 1}`,
+      label: resultType?.name || `账号 ${index + 1}`,
     }
   }
 
@@ -277,7 +279,7 @@ function accountFromRedeemedItem(
     mail_protocol: protocols[0],
     allowed_protocols: protocols,
     raw_line: rawLine,
-    label: item.type.name || `账号 ${index + 1}`,
+    label: resultType?.name || `账号 ${index + 1}`,
     source: "code",
   }
 }
@@ -526,7 +528,9 @@ export function MailConsole() {
 
       const nextAccounts = pages
         .flatMap((page) => page.data.items)
-        .map((item, index) => accountFromRedeemedItem(item, index))
+        .map((item, index) =>
+          accountFromRedeemedItem(item, index, firstPage.data.type)
+        )
         .filter((item): item is MailAccount => Boolean(item))
 
       if (!nextAccounts.length) {

@@ -71,8 +71,9 @@ import {
 } from "./graph.js";
 import {
   parseMailboxAccountLine,
-  collectRedeemedMailProtocols,
-  formatRedeemedInventory,
+  collectResultMailProtocols,
+  formatRedeemResultItem,
+  formatRedeemResultType,
   normalizeMailProtocol,
   normalizeMailProtocols,
   normalizeRedeemEmailTypeInput,
@@ -303,24 +304,58 @@ function serializeRedeemTypeForPublic(type) {
   };
 }
 
-function createPublicRedeemRecordType(record) {
-  return {
-    id: record.type_id,
-    slug: record.type_slug,
-    name: record.type_name,
-    description: "",
-    mail_protocol: record.mail_protocol || "imap",
-    mail_protocols: record.mail_protocols || [record.mail_protocol || "imap"],
-    field_schema: record.field_schema,
-    import_delimiter: record.import_delimiter,
-  };
+// 兑换结果、订单查询、取件载入共用同一套轻量结构：
+// 顶层只放标量元数据 + 类型视图 + 一次协议汇总，条目只保留取件端需要的字段。
+function serializeRedeemResultType(source = {}, fallback = {}) {
+  return formatRedeemResultType({
+    id: source.type_id ?? source.id ?? fallback.type_id ?? fallback.id ?? null,
+    slug:
+      source.type_slug || source.slug || fallback.type_slug || fallback.slug || "",
+    name:
+      source.type_name || source.name || fallback.type_name || fallback.name || "",
+    description: source.type_description || fallback.description || "",
+    import_delimiter: source.import_delimiter || fallback.import_delimiter,
+    mail_protocol: source.mail_protocol || fallback.mail_protocol,
+    mail_protocols:
+      source.type_mail_protocols ||
+      source.mail_protocols ||
+      fallback.mail_protocols,
+  });
 }
 
-function formatPublicRedeemRecord(record) {
-  return formatRedeemedInventory(
-    createPublicRedeemRecordType(record),
-    record.payload,
+function serializeRedeemResultItem(entry = {}, fallback = {}) {
+  return formatRedeemResultItem(
+    {
+      id: entry.type_id ?? entry.id ?? fallback.id ?? null,
+      slug: entry.type_slug || entry.slug || fallback.slug || "",
+      name: entry.type_name || entry.name || fallback.name || "",
+      description: entry.type_description || fallback.description || "",
+      field_schema: entry.field_schema || fallback.field_schema,
+      import_delimiter: entry.import_delimiter || fallback.import_delimiter,
+      mail_protocol: entry.mail_protocol || fallback.mail_protocol,
+      mail_protocols:
+        entry.type_mail_protocols ||
+        fallback.mail_protocols ||
+        entry.mail_protocols,
+    },
+    entry.payload,
+    entry.mail_protocols,
   );
+}
+
+function buildRedeemResultPayload(entries = [], meta = {}) {
+  const fallbackType = meta.type || {};
+  const items = entries.map((entry) =>
+    serializeRedeemResultItem(entry, fallbackType),
+  );
+  const type = serializeRedeemResultType(entries[0] || {}, fallbackType);
+
+  return {
+    ...meta,
+    mail_protocols: collectResultMailProtocols(items, type),
+    type,
+    items,
+  };
 }
 
 function normalizeRedeemTypePayload(body) {
@@ -752,20 +787,26 @@ app.post("/api/redeem/access", async (req, res) => {
         requester_user_agent: String(req.headers["user-agent"] || ""),
       });
 
+      const records = getRedeemRecordsByCodeIdPaged(redeemed.code.id, {
+        page,
+        page_size: pageSize,
+      });
+
       res.json(
         ok(
-          {
+          buildRedeemResultPayload(records.items, {
             source: "newly_redeemed",
             code: redeemed.code.code,
             redeemed_at: redeemed.code.redeemed_at,
             total: redeemed.redeemed_count,
             page,
             page_size: pageSize,
-            items: getRedeemRecordsByCodeIdPaged(redeemed.code.id, {
-              page,
-              page_size: pageSize,
-            }).items.map((record) => formatPublicRedeemRecord(record)),
-          },
+            type: {
+              type_id: redeemed.code.type_id,
+              type_slug: redeemed.code.type_slug,
+              type_name: redeemed.code.type_name,
+            },
+          }),
           "兑换码已兑换并载入邮箱",
         ),
       );
@@ -778,15 +819,19 @@ app.post("/api/redeem/access", async (req, res) => {
     });
     res.json(
       ok(
-        {
+        buildRedeemResultPayload(records.items, {
           source: "existing",
           code: codeInfo.code,
           redeemed_at: codeInfo.redeemed_at,
           total: records.total,
           page: records.page,
           page_size: records.page_size,
-          items: records.items.map(formatPublicRedeemRecord),
-        },
+          type: {
+            type_id: codeInfo.type_id,
+            type_slug: codeInfo.type_slug,
+            type_name: codeInfo.type_name,
+          },
+        }),
         "已载入兑换码对应邮箱",
       ),
     );
@@ -819,26 +864,13 @@ app.post("/api/redeem/query", (req, res) => {
       return;
     }
 
-    const firstRecord = records[0];
     res.json(
       ok(
-        {
+        buildRedeemResultPayload(records, {
           code: codeInfo.code,
           item_count: records.length,
-          redeemed_at: firstRecord.redeemed_at,
-          type: {
-            id: firstRecord.type_id,
-            slug: firstRecord.type_slug,
-            name: firstRecord.type_name,
-            description: "",
-            mail_protocol: firstRecord.mail_protocol || "imap",
-            mail_protocols: firstRecord.mail_protocols || [
-              firstRecord.mail_protocol || "imap",
-            ],
-            import_delimiter: firstRecord.import_delimiter,
-          },
-          items: records.map(formatPublicRedeemRecord),
-        },
+          redeemed_at: records[0].redeemed_at,
+        }),
         "订单查询成功",
       ),
     );
@@ -867,7 +899,7 @@ app.post("/api/redeem/exchange", (req, res) => {
 
     res.json(
       ok(
-        {
+        buildRedeemResultPayload(result.inventories, {
           record_id: result.record_id,
           record_ids: result.record_ids,
           quantity: result.code.quantity,
@@ -876,26 +908,8 @@ app.post("/api/redeem/exchange", (req, res) => {
           code: result.code.code,
           access_expires_at: getRedeemAccessExpiresAt(result.code.redeemed_at),
           access_ttl_hours: getRedeemAccessTtlHours(),
-          ...(result.inventories[0]
-            ? formatRedeemedInventory(
-                {
-                  ...result.type,
-                  mail_protocols: result.inventories[0].mail_protocols,
-                },
-                result.inventories[0].payload,
-              )
-            : {}),
-          mail_protocols: collectRedeemedMailProtocols(
-            result.inventories,
-            result.type,
-          ),
-          items: result.inventories.map((inventory) =>
-            formatRedeemedInventory(
-              { ...result.type, mail_protocols: inventory.mail_protocols },
-              inventory.payload,
-            ),
-          ),
-        },
+          type: result.type,
+        }),
         "兑换成功",
       ),
     );

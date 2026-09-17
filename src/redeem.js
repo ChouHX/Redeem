@@ -112,6 +112,101 @@ export function collectRedeemedMailProtocols(inventories = [], type = {}) {
   );
 }
 
+// IMAP 与 Graph 取件共用同一套 OAuth 凭据（client_id + refresh token），
+// 因此只要账号本身带着完整 OAuth 凭据，两种协议在能力上都是可用的。
+export function inferPickupProtocolsFromPayload(payload = {}) {
+  const rawLine = String(payload?.raw_line || "").trim();
+  if (rawLine) {
+    const parts = rawLine.split("----").map((item) => item.trim());
+    if (parts.length >= 4 && parts[2] && parts[3]) {
+      return ["imap", "graph"];
+    }
+    return [];
+  }
+
+  const clientId = String(payload?.oauth2id || payload?.client_id || "").trim();
+  const refreshToken = String(
+    payload?.refreshtoken || payload?.refresh_token || "",
+  ).trim();
+
+  return clientId && refreshToken ? ["imap", "graph"] : [];
+}
+
+// 账号可用的取件协议 = 类型允许范围 ∩ (入库元数据 ∪ 账号凭据能力)。
+// 返回给用户端的协议一律走这里，保证「兑换结果」与「取件页」看到的
+// 是同一份账号级协议，且类型级协议永远只是上限、不会被当成账号能力。
+export function resolvePickupProtocols({
+  type = {},
+  payload = {},
+  storedProtocols = [],
+} = {}) {
+  const allowed = normalizeMailProtocols(type?.mail_protocols, [
+    type?.mail_protocol || "imap",
+  ]);
+  const stored = normalizeMailProtocols(storedProtocols, []);
+  const capable = normalizeMailProtocols(
+    inferPickupProtocolsFromPayload(payload),
+    [],
+  );
+
+  const resolved = [...new Set([...stored, ...capable])].filter((protocol) =>
+    allowed.includes(protocol),
+  );
+
+  return resolved.length ? resolved : allowed;
+}
+
+// 结果条目只保留取件端真正需要的三样东西：账号级协议、输出行、结构化字段。
+export function formatRedeemResultItem(
+  type = {},
+  payload = {},
+  storedProtocols = [],
+) {
+  const fieldSchema = parseRedeemFieldSchema(type?.field_schema || DEFAULT_FIELD_SCHEMA);
+  const delimiter = String(type?.import_delimiter || "----");
+  const normalizedPayload = normalizeInventoryPayload(fieldSchema, payload);
+
+  return {
+    mail_protocols: resolvePickupProtocols({
+      type,
+      payload: normalizedPayload,
+      storedProtocols,
+    }),
+    formatted_line: serializeInventoryPayload(
+      fieldSchema,
+      normalizedPayload,
+      delimiter,
+    ),
+    payload: normalizedPayload,
+  };
+}
+
+// 类型信息只保留标识与展示文案，协议字段语义为「该类型允许的范围」。
+export function formatRedeemResultType(type = {}) {
+  const mailProtocols = normalizeMailProtocols(type?.mail_protocols, [
+    type?.mail_protocol || "imap",
+  ]);
+
+  return {
+    id: type?.id ?? null,
+    slug: type?.slug || "",
+    name: type?.name || "",
+    description: type?.description || "",
+    import_delimiter: String(type?.import_delimiter || "----"),
+    mail_protocol: mailProtocols[0],
+    mail_protocols: mailProtocols,
+  };
+}
+
+export function collectResultMailProtocols(items = [], type = {}) {
+  return collectRedeemedMailProtocols(
+    (Array.isArray(items) ? items : []).map((item) => ({
+      mail_protocols: item?.mail_protocols,
+    })),
+    type,
+  );
+}
+
 function normalizeFieldKey(value, index) {
   const fallbackKey = `field_${index + 1}`;
   const normalized = String(value || fallbackKey)

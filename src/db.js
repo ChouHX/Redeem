@@ -345,6 +345,10 @@ function rowToRedeemInventory(row) {
     mail_protocol: normalizeMailProtocols(row.pickup_protocols, [
       row.mail_protocol,
     ])[0],
+    // 类型允许的协议范围，供结果序列化判定账号可用协议的上下限。
+    type_mail_protocols: normalizeMailProtocols(row.type_mail_protocols, [
+      row.mail_protocol,
+    ]),
     import_delimiter: row.import_delimiter || "----",
     payload: parseJson(row.payload_json, {}),
     serialized_value: row.serialized_value || "",
@@ -591,6 +595,7 @@ function rowToRedeemRecord(row) {
     normalized_code: row.normalized_code,
     type_name: row.type_name || "",
     type_slug: row.type_slug || "",
+    type_description: row.type_description || "",
     field_schema: row.field_schema
       ? parseRedeemFieldSchema(row.field_schema)
       : undefined,
@@ -600,6 +605,10 @@ function rowToRedeemRecord(row) {
     mail_protocol: normalizeMailProtocols(row.pickup_protocols, [
       row.mail_protocol,
     ])[0],
+    // 类型允许的协议范围，供结果序列化判定账号可用协议的上下限。
+    type_mail_protocols: normalizeMailProtocols(row.type_mail_protocols, [
+      row.mail_protocol,
+    ]),
     import_delimiter: row.import_delimiter || "----",
     payload: parseJson(row.payload_json, {}),
     requester_ip: row.requester_ip || "",
@@ -640,6 +649,8 @@ function rowToRedeemTypeFromCode(row) {
     description: row.description,
     field_schema: row.field_schema,
     mail_protocol: row.mail_protocol,
+    // 漏掉这一列会让类型协议退化成单值默认协议，导致结果展示与账号能力不符。
+    mail_protocols: row.mail_protocols,
     import_delimiter: row.import_delimiter,
     is_active: 1,
     available_inventory_count: 0,
@@ -657,7 +668,16 @@ function recordToRedeemInventory(record, codeId) {
     type_name: record.type_name,
     type_slug: record.type_slug,
     field_schema: record.field_schema,
-    mail_protocol: record.mail_protocol,
+    // 已兑换后重新载入必须沿用账号自身的取件协议，否则会退化成类型默认协议。
+    mail_protocols: normalizeMailProtocols(record.mail_protocols, [
+      record.mail_protocol,
+    ]),
+    mail_protocol: normalizeMailProtocols(record.mail_protocols, [
+      record.mail_protocol,
+    ])[0],
+    type_mail_protocols: normalizeMailProtocols(record.type_mail_protocols, [
+      record.mail_protocol,
+    ]),
     import_delimiter: record.import_delimiter,
     payload: record.payload,
     serialized_value: "",
@@ -706,6 +726,7 @@ function buildExistingRedeemResult(codeRow) {
           types.slug AS type_slug,
           types.field_schema,
           types.mail_protocol,
+          types.mail_protocols AS type_mail_protocols,
           types.import_delimiter
         FROM redeem_inventory inventory
         JOIN redeem_email_types types ON types.id = inventory.type_id
@@ -1977,8 +1998,10 @@ export function getRedeemRecordsByCodeId(codeId) {
           records.*,
           types.name AS type_name,
           types.slug AS type_slug,
+          types.description AS type_description,
           types.field_schema,
           types.mail_protocol,
+          types.mail_protocols AS type_mail_protocols,
           inventory.pickup_protocols,
           types.import_delimiter
         FROM redeem_records records
@@ -2017,8 +2040,10 @@ export function getRedeemRecordsByCodeIdPaged(
           records.*,
           types.name AS type_name,
           types.slug AS type_slug,
+          types.description AS type_description,
           types.field_schema,
           types.mail_protocol,
+          types.mail_protocols AS type_mail_protocols,
           inventory.pickup_protocols,
           types.import_delimiter
         FROM redeem_records records
@@ -2549,6 +2574,7 @@ export function redeemByCode({
           type_slug: codeRow.type_slug,
           field_schema: codeRow.field_schema,
           mail_protocol: codeRow.mail_protocol,
+          type_mail_protocols: codeRow.mail_protocols,
           import_delimiter: codeRow.import_delimiter,
           status: "redeemed",
           redeemed_code_id: codeRow.id,

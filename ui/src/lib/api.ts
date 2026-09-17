@@ -94,6 +94,8 @@ export type RedeemAccessResult = {
   total: number
   page: number
   page_size: number
+  mail_protocols: MailProtocol[]
+  type: RedeemResultType
   items: RedeemedItem[]
 }
 
@@ -121,20 +123,22 @@ export type RedeemFieldValue = FieldSchema & {
   value: string
 }
 
+// 结果类型视图：协议字段表示「该类型允许的取件协议范围」，不是账号能力。
+export type RedeemResultType = {
+  id: number | null
+  slug: string
+  name: string
+  description: string
+  import_delimiter: string
+  mail_protocol: MailProtocol
+  mail_protocols: MailProtocol[]
+}
+
+// 结果条目：mail_protocols 是账号级取件协议，为结果里协议的权威来源。
 export type RedeemedItem = {
-  mail_protocols?: MailProtocol[]
-  type: {
-    id: number | null
-    slug: string
-    name: string
-    description: string
-    mail_protocol?: MailProtocol
-    mail_protocols?: MailProtocol[]
-    import_delimiter: string
-  }
-  fields: RedeemFieldValue[]
-  payload: Record<string, string>
+  mail_protocols: MailProtocol[]
   formatted_line: string
+  payload: Record<string, string>
 }
 
 export type RedeemExchangeResult = {
@@ -146,35 +150,17 @@ export type RedeemExchangeResult = {
   code: string
   access_expires_at?: string | null
   access_ttl_hours?: number
-  mail_protocols?: MailProtocol[]
-  type: {
-    id: number | null
-    slug: string
-    name: string
-    description: string
-    mail_protocol?: MailProtocol
-    mail_protocols?: MailProtocol[]
-    import_delimiter: string
-  }
+  mail_protocols: MailProtocol[]
+  type: RedeemResultType
   items: RedeemedItem[]
-  fields: RedeemFieldValue[]
-  payload: Record<string, string>
-  formatted_line: string
 }
 
 export type RedeemOrderQueryResult = {
   code: string
   item_count: number
   redeemed_at: string
-  type: {
-    id: number | null
-    slug: string
-    name: string
-    description: string
-    mail_protocol?: MailProtocol
-    mail_protocols?: MailProtocol[]
-    import_delimiter: string
-  }
+  mail_protocols: MailProtocol[]
+  type: RedeemResultType
   items: RedeemedItem[]
 }
 

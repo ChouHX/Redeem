@@ -90,6 +90,9 @@ function buildResultText(items: ResultLineItem[]) {
   return items.map((item) => item.formatted_line).join("\n")
 }
 
+// 只信账号级协议：顶层汇总为首选，条目协议作兜底。
+// 类型级协议（result.type.mail_protocols）只是该类型的允许范围，
+// 混进来会让兑换页显示账号实际并不支持的取件方式。
 function collectMailProtocols(
   result: RedeemExchangeResult | null
 ): MailProtocol[] {
@@ -99,11 +102,7 @@ function collectMailProtocols(
 
   const collected = [
     ...(result.mail_protocols || []),
-    ...(result.type?.mail_protocols || []),
-    ...result.items.flatMap((item) => [
-      ...(item.mail_protocols || []),
-      ...(item.type?.mail_protocols || []),
-    ]),
+    ...result.items.flatMap((item) => item.mail_protocols || []),
   ].filter((protocol): protocol is MailProtocol => Boolean(protocol))
 
   return (["imap", "graph"] as MailProtocol[]).filter((protocol) =>
