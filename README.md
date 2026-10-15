@@ -61,6 +61,36 @@ npm run build
 npm start
 ```
 
+## 镜像发布
+
+推送到 `main`、推送 `v*` / 语义化版本 tag，或手动触发 `Docker Image` 工作流时，
+会在 GitHub Actions 中构建镜像并推送到 GitHub Container Registry：
+
+- 镜像地址：`ghcr.io/chouhx/redeem`
+- 标签规则：`main` 分支 → `main`、`latest`、`sha-xxxxxxx`；tag `1.2.3` → `1.2.3`、`1.2`、`latest`；PR → 只构建不推送
+- 构建平台：默认 `linux/amd64` + `linux/arm64`（手动触发可只选单平台）
+- PR 触发只做 Dockerfile 构建校验，不推送
+
+拉取使用已发布镜像：
+
+```bash
+docker pull ghcr.io/chouhx/redeem:latest
+
+docker run -d --name redeem -p 5002:5002 \
+  -e ADMIN_TOKEN=your-token \
+  -v "$PWD/data:/app/data" \
+  ghcr.io/chouhx/redeem:latest
+```
+
+本地自行构建仍可用：
+
+```bash
+docker compose up -d --build
+```
+
+> 首次推送后，GHCR 上的包默认是私有的。如需匿名拉取，在 GitHub 的
+> `Packages` → 该镜像 → `Package settings` 中把可见性改为 `Public`。
+
 ## 常用环境变量
 
 后端默认会读取根目录 `.env`：
