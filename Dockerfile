@@ -42,6 +42,7 @@ ENV NODE_ENV=production
 ENV NODE_BACKEND_HOST=0.0.0.0
 ENV NODE_BACKEND_PORT=5002
 ENV DB_PATH=/app/data/outlook_manager.db
+ENV UPLOAD_DIR=/app/data/uploads
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -52,7 +53,7 @@ COPY package.json ./
 COPY src ./src
 COPY --from=frontend-build /app/ui/dist ./ui/dist
 
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data/uploads/ads
 
 EXPOSE 5002
 

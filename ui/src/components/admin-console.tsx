@@ -5,6 +5,7 @@ import {
   EllipsisVerticalIcon,
   EyeIcon,
   FileUpIcon,
+  ImageUpIcon,
   KeyRoundIcon,
   Layers3Icon,
   LogOutIcon,
@@ -31,6 +32,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import {
   type AdSlotConfig,
+  type AdSlotItem,
   ApiError,
   type AdminOverview,
   type FaqConfig,
@@ -77,9 +79,10 @@ import {
   updateAdminFaq,
   updateAdminPassword,
   updateAdminType,
+  uploadAdminAdImage,
   verifyAdminToken,
 } from "@/lib/api"
-import { AdSlotCard } from "@/components/ad-slot-card"
+import { AdSlotRow } from "@/components/ad-slot-card"
 import { RichTextContent, RichTextEditor } from "@/components/rich-text-content"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -384,29 +387,198 @@ function SectionPager({
   )
 }
 
-function AdSlotEditorCard({
-  slot,
-  onEnabledChange,
+const AD_SLOT_LABELS = ["左侧广告", "右侧广告"] as const
+
+function AdSlotItemFields({
+  index,
+  item,
+  onItemEnabledChange,
   onFieldChange,
   onActionChange,
+  onImageUpload,
+  uploading,
+  uploadProgress,
 }: {
-  slot: AdSlotConfig
-  onEnabledChange: (enabled: boolean) => void
+  index: number
+  item: AdSlotItem
+  onItemEnabledChange: (index: number, enabled: boolean) => void
   onFieldChange: (
+    index: number,
     key: "title" | "description" | "image_url",
-    value: string | string[]
+    value: string
   ) => void
   onActionChange: (
-    actionKey: "primary_action",
+    index: number,
     field: "label" | "href",
     value: string
   ) => void
+  onImageUpload: (index: number, file: File) => void
+  uploading: boolean
+  uploadProgress: number | null
+}) {
+  const adImageInputRef = useRef<HTMLInputElement | null>(null)
+
+  return (
+    <div className="flex flex-col gap-4 rounded-lg border border-border/70 bg-background/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-medium">
+          {AD_SLOT_LABELS[index] || `广告 ${index + 1}`}
+        </span>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={item.enabled}
+            onChange={(event) =>
+              onItemEnabledChange(index, event.currentTarget.checked)
+            }
+          />
+          显示此广告位
+        </label>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Field>
+          <FieldLabel>标题</FieldLabel>
+          <FieldContent>
+            <Input
+              value={item.title}
+              onChange={(event) =>
+                onFieldChange(index, "title", event.target.value)
+              }
+            />
+          </FieldContent>
+        </Field>
+        <Field>
+          <FieldLabel>主按钮文案</FieldLabel>
+          <FieldContent>
+            <Input
+              value={item.primary_action.label}
+              onChange={(event) =>
+                onActionChange(index, "label", event.target.value)
+              }
+            />
+          </FieldContent>
+        </Field>
+      </div>
+
+      <Field>
+        <FieldLabel>广告图片</FieldLabel>
+        <FieldContent>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={adImageInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp,image/x-icon"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0]
+                event.currentTarget.value = ""
+                if (file) {
+                  onImageUpload(index, file)
+                }
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={uploading}
+              onClick={() => adImageInputRef.current?.click()}
+            >
+              <ImageUpIcon data-icon="inline-start" />
+              {uploading
+                ? `上传中 ${uploadProgress ?? 0}%`
+                : item.image_url
+                  ? "重新上传图片"
+                  : "上传图片"}
+            </Button>
+            {item.image_url ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={uploading}
+                onClick={() => onFieldChange(index, "image_url", "")}
+              >
+                <Trash2Icon data-icon="inline-start" />
+                清除图片
+              </Button>
+            ) : null}
+          </div>
+          <Input
+            value={item.image_url}
+            onChange={(event) =>
+              onFieldChange(index, "image_url", event.target.value)
+            }
+            placeholder="上传后自动填入，也可手动填写 /ads/redeem.gif 或 https://..."
+          />
+          <FieldDescription>
+            支持 PNG / JPG / GIF / WEBP / AVIF / BMP / ICO，单张不超过
+            8MB。上传成功后点击下方「保存广告位」才会生效。
+          </FieldDescription>
+        </FieldContent>
+      </Field>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Field>
+          <FieldLabel>主按钮链接</FieldLabel>
+          <FieldContent>
+            <Input
+              value={item.primary_action.href}
+              onChange={(event) =>
+                onActionChange(index, "href", event.target.value)
+              }
+            />
+          </FieldContent>
+        </Field>
+      </div>
+
+      <Field>
+        <FieldLabel>描述</FieldLabel>
+        <FieldContent>
+          <Textarea
+            rows={3}
+            value={item.description}
+            onChange={(event) =>
+              onFieldChange(index, "description", event.target.value)
+            }
+          />
+        </FieldContent>
+      </Field>
+    </div>
+  )
+}
+
+function AdSlotEditorCard({
+  slot,
+  onEnabledChange,
+  onItemEnabledChange,
+  onFieldChange,
+  onActionChange,
+  onImageUpload,
+  uploadingIndex,
+  uploadProgress,
+}: {
+  slot: AdSlotConfig
+  onEnabledChange: (enabled: boolean) => void
+  onItemEnabledChange: (index: number, enabled: boolean) => void
+  onFieldChange: (
+    index: number,
+    key: "title" | "description" | "image_url",
+    value: string
+  ) => void
+  onActionChange: (index: number, field: "label" | "href", value: string) => void
+  onImageUpload: (index: number, file: File) => void
+  uploadingIndex: number | null
+  uploadProgress: number | null
 }) {
   return (
     <Card className="mx-auto w-full max-w-3xl border border-border/70 bg-background/70">
       <CardHeader className="border-b border-border/70">
         <CardTitle>共享广告位</CardTitle>
-        <CardDescription>兑换页与收件页共用同一份广告配置</CardDescription>
+        <CardDescription>
+          一行两个广告位，左、右各一个；兑换页与收件页共用同一份配置。窄屏下自动上下堆叠。
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         <div className="flex flex-col gap-4">
@@ -423,88 +595,32 @@ function AdSlotEditorCard({
             </label>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field>
-              <FieldLabel>标题</FieldLabel>
-              <FieldContent>
-                <Input
-                  value={slot.title}
-                  onChange={(event) =>
-                    onFieldChange("title", event.target.value)
-                  }
-                />
-              </FieldContent>
-            </Field>
-            <Field>
-              <FieldLabel>主按钮文案</FieldLabel>
-              <FieldContent>
-                <Input
-                  value={slot.primary_action.label}
-                  onChange={(event) =>
-                    onActionChange(
-                      "primary_action",
-                      "label",
-                      event.target.value
-                    )
-                  }
-                />
-              </FieldContent>
-            </Field>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field>
-              <FieldLabel>图片 / 动图 URL</FieldLabel>
-              <FieldContent>
-                <Input
-                  value={slot.image_url}
-                  onChange={(event) =>
-                    onFieldChange("image_url", event.target.value)
-                  }
-                  placeholder="例如 /ads/redeem.gif 或 https://..."
-                />
-              </FieldContent>
-            </Field>
-            <Field>
-              <FieldLabel>主按钮链接</FieldLabel>
-              <FieldContent>
-                <Input
-                  value={slot.primary_action.href}
-                  onChange={(event) =>
-                    onActionChange("primary_action", "href", event.target.value)
-                  }
-                />
-              </FieldContent>
-            </Field>
-          </div>
-
-          <Field>
-            <FieldLabel>描述</FieldLabel>
-            <FieldContent>
-              <Textarea
-                rows={3}
-                value={slot.description}
-                onChange={(event) =>
-                  onFieldChange("description", event.target.value)
-                }
-              />
-            </FieldContent>
-          </Field>
+          {slot.slots.map((item, index) => (
+            <AdSlotItemFields
+              key={index}
+              index={index}
+              item={item}
+              onItemEnabledChange={onItemEnabledChange}
+              onFieldChange={onFieldChange}
+              onActionChange={onActionChange}
+              onImageUpload={onImageUpload}
+              uploading={uploadingIndex === index}
+              uploadProgress={uploadProgress}
+            />
+          ))}
         </div>
 
         <Separator />
 
         <div className="flex flex-col gap-3">
           <p className="text-xs text-muted-foreground">预览</p>
-          <AdSlotCard
-            title={slot.title}
-            description={slot.description}
-            imageUrl={slot.image_url}
-            primaryAction={
-              slot.primary_action.href ? slot.primary_action : undefined
-            }
-            compact
-          />
+          {slot.slots.some((item) => item.enabled) ? (
+            <AdSlotRow slots={slot.slots} compact />
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              左右广告位都未启用，前台不会展示广告。
+            </p>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -561,6 +677,12 @@ export function AdminConsole() {
   const [codeSelectionLoading, setCodeSelectionLoading] = useState(false)
   const [passwordSubmitting, setPasswordSubmitting] = useState(false)
   const [adsSubmitting, setAdsSubmitting] = useState(false)
+  const [adImageUploadingIndex, setAdImageUploadingIndex] = useState<
+    number | null
+  >(null)
+  const [adImageUploadProgress, setAdImageUploadProgress] = useState<
+    number | null
+  >(null)
   const [faqSubmitting, setFaqSubmitting] = useState(false)
   const [generatedCodes, setGeneratedCodes] = useState<RedeemCodeItem[]>([])
   const [inventoryFilters, setInventoryFilters] = useState<InventoryFilters>({
@@ -1165,47 +1287,55 @@ export function AdminConsole() {
     setInventoryImportDialogOpen(true)
   }
 
-  function updateAdSlotField(
-    key: "title" | "description" | "image_url",
-    value: string | string[]
+  function patchAdSlotItem(
+    index: number,
+    patch: Partial<AdSlotItem> | ((item: AdSlotItem) => Partial<AdSlotItem>)
   ) {
-    setAdSlot((current) =>
-      current
-        ? {
-            ...current,
-            [key]: value,
-          }
-        : current
-    )
+    setAdSlot((current) => {
+      if (!current) {
+        return current
+      }
+
+      const slots = current.slots.map((item, itemIndex) => {
+        if (itemIndex !== index) {
+          return item
+        }
+
+        const nextPatch = typeof patch === "function" ? patch(item) : patch
+        return { ...item, ...nextPatch }
+      })
+
+      return { ...current, slots }
+    })
+  }
+
+  function updateAdSlotField(
+    index: number,
+    key: "title" | "description" | "image_url",
+    value: string
+  ) {
+    patchAdSlotItem(index, { [key]: value })
   }
 
   function updateAdSlotEnabled(enabled: boolean) {
-    setAdSlot((current) =>
-      current
-        ? {
-            ...current,
-            enabled,
-          }
-        : current
-    )
+    setAdSlot((current) => (current ? { ...current, enabled } : current))
+  }
+
+  function updateAdSlotItemEnabled(index: number, enabled: boolean) {
+    patchAdSlotItem(index, { enabled })
   }
 
   function updateAdSlotActionField(
-    actionKey: "primary_action",
+    index: number,
     field: "label" | "href",
     value: string
   ) {
-    setAdSlot((current) =>
-      current
-        ? {
-            ...current,
-            [actionKey]: {
-              ...current[actionKey],
-              [field]: value,
-            },
-          }
-        : current
-    )
+    patchAdSlotItem(index, (item) => ({
+      primary_action: {
+        ...item.primary_action,
+        [field]: value,
+      },
+    }))
   }
 
   async function handleAdSlotsSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -1223,6 +1353,31 @@ export function AdminConsole() {
       handleApiError(error, "广告位配置更新失败")
     } finally {
       setAdsSubmitting(false)
+    }
+  }
+
+  async function handleAdImageUpload(index: number, file: File) {
+    if (!file.type.startsWith("image/")) {
+      showErrorToast("文件类型不支持", "请选择 PNG / JPG / GIF / WEBP 等图片文件。")
+      return
+    }
+
+    setAdImageUploadingIndex(index)
+    setAdImageUploadProgress(0)
+    try {
+      const payload = await uploadAdminAdImage(token, file, {
+        onUploadProgress: setAdImageUploadProgress,
+      })
+      patchAdSlotItem(index, { image_url: payload.data.image_url })
+      showSuccessToast(
+        "图片上传成功",
+        `${AD_SLOT_LABELS[index] || "广告位"}图片已填入，点击「保存广告位」后生效。`
+      )
+    } catch (error) {
+      handleApiError(error, "图片上传失败")
+    } finally {
+      setAdImageUploadingIndex(null)
+      setAdImageUploadProgress(null)
     }
   }
 
@@ -3196,7 +3351,7 @@ export function AdminConsole() {
                 </CardAction>
                 <CardTitle>广告位配置</CardTitle>
                 <CardDescription>
-                  配置兑换页的自营商品推荐卡内容。建议直接写你发卡网的商品和入口，不要堆太多标签或复杂营销话术。
+                  一行两个广告位（左 / 右各一个），兑换页与收件页共用。建议直接写你发卡网的商品和入口，不要堆太多标签或复杂营销话术。
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-5">
@@ -3210,8 +3365,14 @@ export function AdminConsole() {
                     <AdSlotEditorCard
                       slot={adSlot}
                       onEnabledChange={updateAdSlotEnabled}
+                      onItemEnabledChange={updateAdSlotItemEnabled}
                       onFieldChange={updateAdSlotField}
                       onActionChange={updateAdSlotActionField}
+                      onImageUpload={(index, file) =>
+                        void handleAdImageUpload(index, file)
+                      }
+                      uploadingIndex={adImageUploadingIndex}
+                      uploadProgress={adImageUploadProgress}
                     />
                     <div className="flex justify-end">
                       <Button type="submit" disabled={adsSubmitting}>

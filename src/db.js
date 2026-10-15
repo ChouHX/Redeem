@@ -117,11 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
 CREATE INDEX IF NOT EXISTS idx_account_tags_email ON account_tags(email);
 CREATE INDEX IF NOT EXISTS idx_email_cache_email ON email_cache(email);
 CREATE INDEX IF NOT EXISTS idx_redeem_types_active ON redeem_email_types(is_active);
-CREATE INDEX IF NOT EXISTS idx_redeem_inventory_type_status ON redeem_inventory(type_id, status);
-CREATE INDEX IF NOT EXISTS idx_redeem_codes_type_status ON redeem_codes(type_id, status);
 CREATE INDEX IF NOT EXISTS idx_redeem_codes_normalized_code ON redeem_codes(normalized_code);
-CREATE INDEX IF NOT EXISTS idx_redeem_records_type_id ON redeem_records(type_id);
-CREATE INDEX IF NOT EXISTS idx_redeem_records_code_id ON redeem_records(code_id);
 `);
 
 const shouldRebuildInventorySearch = !db
@@ -210,6 +206,114 @@ if (addedInventoryProtocols) {
 ensureColumn("redeem_codes", "data_deleted_at", "TEXT");
 ensureColumn("redeem_codes", "data_deleted_reason", "TEXT DEFAULT ''");
 
+// 取件协议标志列：把 pickup_protocols 的 JSON 判断物化成整数列，
+// 让协议筛选 / 统计走索引，避免每次查询都对 13w 行做 json_each 全表扫描。
+const addedInventoryImapFlag = ensureColumn(
+  "redeem_inventory",
+  "pickup_imap",
+  "INTEGER NOT NULL DEFAULT 0",
+);
+const addedInventoryGraphFlag = ensureColumn(
+  "redeem_inventory",
+  "pickup_graph",
+  "INTEGER NOT NULL DEFAULT 0",
+);
+
+if (addedInventoryImapFlag || addedInventoryGraphFlag) {
+  db.prepare(
+    `
+      UPDATE redeem_inventory
+      SET
+        pickup_imap = CASE
+          WHEN json_valid(pickup_protocols) THEN
+            CASE WHEN EXISTS (
+              SELECT 1 FROM json_each(redeem_inventory.pickup_protocols) WHERE value = 'imap'
+            ) THEN 1 ELSE 0 END
+          ELSE
+            CASE WHEN (
+              SELECT mail_protocol FROM redeem_email_types WHERE id = redeem_inventory.type_id
+            ) = 'imap' THEN 1 ELSE 0 END
+        END,
+        pickup_graph = CASE
+          WHEN json_valid(pickup_protocols) THEN
+            CASE WHEN EXISTS (
+              SELECT 1 FROM json_each(redeem_inventory.pickup_protocols) WHERE value = 'graph'
+            ) THEN 1 ELSE 0 END
+          ELSE
+            CASE WHEN (
+              SELECT mail_protocol FROM redeem_email_types WHERE id = redeem_inventory.type_id
+            ) = 'graph' THEN 1 ELSE 0 END
+        END
+    `,
+  ).run();
+}
+
+// 覆盖索引：尾部带上 id，使「筛选 + ORDER BY id DESC + LIMIT」无需临时排序。
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_redeem_inventory_type_status_id
+  ON redeem_inventory(type_id, status, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_inventory_type_id
+  ON redeem_inventory(type_id, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_inventory_status_id
+  ON redeem_inventory(status, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_inventory_imap_id
+  ON redeem_inventory(pickup_imap, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_inventory_graph_id
+  ON redeem_inventory(pickup_graph, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_inventory_type_status_imap_id
+  ON redeem_inventory(type_id, status, pickup_imap, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_inventory_type_status_graph_id
+  ON redeem_inventory(type_id, status, pickup_graph, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_codes_status_id
+  ON redeem_codes(status, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_codes_type_status_id
+  ON redeem_codes(type_id, status, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_records_code_id_id
+  ON redeem_records(code_id, id);
+CREATE INDEX IF NOT EXISTS idx_redeem_records_type_code_id
+  ON redeem_records(type_id, code_id, id);
+`);
+
+// 清理被新索引前缀覆盖的旧索引，减少每次写入的索引维护开销。
+// (type_id, status) 被 (type_id, status, id) 覆盖；records 的两个单列索引同理。
+db.exec(`
+DROP INDEX IF EXISTS idx_redeem_inventory_type_status;
+DROP INDEX IF EXISTS idx_redeem_codes_type_status;
+DROP INDEX IF EXISTS idx_redeem_records_type_id;
+DROP INDEX IF EXISTS idx_redeem_records_code_id;
+`);
+
+// 标志列兜底：pickup_imap / pickup_graph 必须与 pickup_protocols 一致。
+// WHEN 守卫保证「写入方已算好标志列」时不触发额外 UPDATE，因此正常路径零开销；
+// 一旦有别的写入路径漏填，触发器会自动纠正，避免协议筛选静默查不到数据。
+db.exec(`
+CREATE TRIGGER IF NOT EXISTS redeem_inventory_protocol_flags_insert
+AFTER INSERT ON redeem_inventory
+WHEN
+  NEW.pickup_imap <> (instr(NEW.pickup_protocols, '"imap"') > 0)
+  OR NEW.pickup_graph <> (instr(NEW.pickup_protocols, '"graph"') > 0)
+BEGIN
+  UPDATE redeem_inventory
+  SET
+    pickup_imap = (instr(NEW.pickup_protocols, '"imap"') > 0),
+    pickup_graph = (instr(NEW.pickup_protocols, '"graph"') > 0)
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS redeem_inventory_protocol_flags_update
+AFTER UPDATE OF pickup_protocols ON redeem_inventory
+WHEN
+  NEW.pickup_imap <> (instr(NEW.pickup_protocols, '"imap"') > 0)
+  OR NEW.pickup_graph <> (instr(NEW.pickup_protocols, '"graph"') > 0)
+BEGIN
+  UPDATE redeem_inventory
+  SET
+    pickup_imap = (instr(NEW.pickup_protocols, '"imap"') > 0),
+    pickup_graph = (instr(NEW.pickup_protocols, '"graph"') > 0)
+  WHERE id = NEW.id;
+END;
+`);
+
 function rowToAccount(row) {
   return {
     password: row.password || "",
@@ -235,6 +339,51 @@ function parseJson(value, fallback) {
   }
 }
 
+// 由 pickup_protocols 推导物化标志列，供所有写入路径复用。
+function protocolFlags(protocols) {
+  const list = normalizeMailProtocols(protocols, []);
+  return {
+    pickup_imap: list.includes("imap") ? 1 : 0,
+    pickup_graph: list.includes("graph") ? 1 : 0,
+  };
+}
+
+// 批量操作分块大小：兼顾 SQLite 变量上限与语句开销。
+const SQL_CHUNK_SIZE = 400;
+const sqlStatementCache = new Map();
+
+function chunkArray(items, size = SQL_CHUNK_SIZE) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function placeholders(count) {
+  return new Array(count).fill("?").join(", ");
+}
+
+// 按 SQL 文本缓存 prepared statement，避免在分块循环里反复编译同一条语句。
+function prepareCached(sql) {
+  let statement = sqlStatementCache.get(sql);
+  if (!statement) {
+    statement = db.prepare(sql);
+    sqlStatementCache.set(sql, statement);
+  }
+  return statement;
+}
+
+function normalizeIdTargets(ids) {
+  return [
+    ...new Set(
+      (ids || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
+}
+
 function buildRedeemTypeSelect() {
   return `
     SELECT
@@ -250,16 +399,7 @@ function buildRedeemTypeSelect() {
         WHERE
           inventory.type_id = t.id
           AND inventory.status = 'available'
-          AND EXISTS (
-            SELECT 1
-            FROM json_each(
-              CASE
-                WHEN json_valid(inventory.pickup_protocols) THEN inventory.pickup_protocols
-                ELSE json_array(t.mail_protocol)
-              END
-            ) protocols
-            WHERE protocols.value = 'imap'
-          )
+          AND inventory.pickup_imap = 1
       ) AS available_imap_inventory_count,
       (
         SELECT COUNT(*)
@@ -267,16 +407,7 @@ function buildRedeemTypeSelect() {
         WHERE
           inventory.type_id = t.id
           AND inventory.status = 'available'
-          AND EXISTS (
-            SELECT 1
-            FROM json_each(
-              CASE
-                WHEN json_valid(inventory.pickup_protocols) THEN inventory.pickup_protocols
-                ELSE json_array(t.mail_protocol)
-              END
-            ) protocols
-            WHERE protocols.value = 'graph'
-          )
+          AND inventory.pickup_graph = 1
       ) AS available_graph_inventory_count,
       (
         SELECT COUNT(*)
@@ -518,14 +649,7 @@ function buildRedeemInventoryWhere({
   }
 
   if (protocol === "imap" || protocol === "graph") {
-    conditions.push(
-      `EXISTS (
-        SELECT 1
-        FROM json_each(inventory.pickup_protocols)
-        WHERE value = ?
-      )`,
-    );
-    params.push(protocol);
+    conditions.push(`inventory.pickup_${protocol} = 1`);
   }
 
   if (q) {
@@ -1196,10 +1320,15 @@ export function getRedeemInventoryPaged({
           types.mail_protocol,
           types.import_delimiter
         FROM redeem_inventory inventory
+        JOIN (
+          SELECT id
+          FROM redeem_inventory inventory
+          ${where}
+          ORDER BY inventory.id DESC
+          LIMIT ? OFFSET ?
+        ) page ON page.id = inventory.id
         JOIN redeem_email_types types ON types.id = inventory.type_id
-        ${where}
         ORDER BY inventory.id DESC
-        LIMIT ? OFFSET ?
       `,
     )
     .all(...params, safePageSize, Math.max(0, (safePage - 1) * safePageSize));
@@ -1282,18 +1411,20 @@ export function importRedeemInventory({
           serialized_value,
           search_text,
           pickup_protocols,
+          pickup_imap,
+          pickup_graph,
           status,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, 'available', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'available', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `,
     );
     const existingStmt = db.prepare(
       "SELECT id, pickup_protocols FROM redeem_inventory WHERE type_id = ? AND serialized_value = ? LIMIT 1",
     );
     const mergeProtocolsStmt = db.prepare(
-      "UPDATE redeem_inventory SET pickup_protocols = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      "UPDATE redeem_inventory SET pickup_protocols = ?, pickup_imap = ?, pickup_graph = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
     );
 
     for (const item of nextItems) {
@@ -1306,12 +1437,15 @@ export function importRedeemInventory({
           targetType.import_delimiter,
         );
       const searchText = item.search_text || payloadToSearchText(payload);
+      const flags = protocolFlags(pickupProtocols);
       const result = insertStmt.run(
         targetType.id,
         JSON.stringify(payload),
         serializedValue,
         searchText,
         JSON.stringify(pickupProtocols),
+        flags.pickup_imap,
+        flags.pickup_graph,
       );
 
       if (result.changes > 0) {
@@ -1334,8 +1468,11 @@ export function importRedeemInventory({
             merged.length !== existingProtocols.length ||
             merged.some((protocol) => !existingProtocols.includes(protocol))
           ) {
+            const mergedFlags = protocolFlags(merged);
             protocolsUpdated += mergeProtocolsStmt.run(
               JSON.stringify(merged),
+              mergedFlags.pickup_imap,
+              mergedFlags.pickup_graph,
               existing.id,
             ).changes;
           }
@@ -1398,13 +1535,7 @@ export function updateRedeemInventoryBatch(
   ids,
   { type_id = null, status = null } = {},
 ) {
-  const targets = [
-    ...new Set(
-      (ids || [])
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0),
-    ),
-  ];
+  const targets = normalizeIdTargets(ids);
   const nextStatus =
     status === "available" || status === "unavailable" ? status : null;
   const nextTypeId =
@@ -1421,32 +1552,37 @@ export function updateRedeemInventoryBatch(
     throw new Error("兑换类型不存在");
   }
 
+  // 只改状态：一条分块 UPDATE 搞定，避免逐行 SELECT + UPDATE。
+  if (!nextTypeId) {
+    const tx = db.transaction((items, targetStatus) => {
+      let updatedCount = 0;
+      for (const chunk of chunkArray(items)) {
+        updatedCount += prepareCached(
+          `
+            UPDATE redeem_inventory
+            SET status = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id IN (${placeholders(chunk.length)})
+              AND status != 'redeemed'
+              AND status != ?
+          `,
+        ).run(targetStatus, ...chunk, targetStatus).changes;
+      }
+
+      return {
+        updated_count: updatedCount,
+        skipped_count: items.length - updatedCount,
+        total_count: items.length,
+        status: targetStatus,
+        type_id: null,
+      };
+    });
+
+    return tx(targets, nextStatus);
+  }
+
   const tx = db.transaction((items, targetStatus, targetType) => {
     let updatedCount = 0;
     let skippedCount = 0;
-    const selectStmt = db.prepare(
-      `
-        SELECT
-          inventory.*,
-          types.name AS type_name,
-          types.slug AS type_slug,
-          types.field_schema,
-          types.mail_protocol,
-          types.import_delimiter
-        FROM redeem_inventory inventory
-        JOIN redeem_email_types types ON types.id = inventory.type_id
-        WHERE inventory.id = ?
-        LIMIT 1
-      `,
-    );
-    const duplicateStmt = db.prepare(
-      `
-        SELECT id
-        FROM redeem_inventory
-        WHERE type_id = ? AND serialized_value = ? AND id != ?
-        LIMIT 1
-      `,
-    );
     const updateStmt = db.prepare(
       `
         UPDATE redeem_inventory
@@ -1459,56 +1595,83 @@ export function updateRedeemInventoryBatch(
         WHERE id = ?
       `,
     );
+    const duplicateStmt = db.prepare(
+      `
+        SELECT id
+        FROM redeem_inventory
+        WHERE type_id = ? AND serialized_value = ? AND id != ?
+        LIMIT 1
+      `,
+    );
 
-    for (const id of items) {
-      const row = selectStmt.get(id);
-      if (!row || row.status === "redeemed") {
-        skippedCount += 1;
-        continue;
+    for (const chunk of chunkArray(items)) {
+      const rows = prepareCached(
+        `
+          SELECT
+            inventory.*,
+            types.field_schema,
+            types.mail_protocol,
+            types.import_delimiter
+          FROM redeem_inventory inventory
+          JOIN redeem_email_types types ON types.id = inventory.type_id
+          WHERE inventory.id IN (${placeholders(chunk.length)})
+        `,
+      ).all(...chunk);
+      const rowById = new Map(rows.map((row) => [Number(row.id), row]));
+
+      for (const id of chunk) {
+        const row = rowById.get(id);
+        if (!row || row.status === "redeemed") {
+          skippedCount += 1;
+          continue;
+        }
+
+        const payload = parseJson(row.payload_json, {});
+        const finalTypeId = targetType ? targetType.id : row.type_id;
+        const finalFieldSchema = targetType
+          ? targetType.field_schema
+          : parseRedeemFieldSchema(row.field_schema);
+        const finalDelimiter = targetType
+          ? targetType.import_delimiter
+          : row.import_delimiter || "----";
+        const finalSerializedValue = serializeInventoryPayload(
+          finalFieldSchema,
+          payload,
+          finalDelimiter,
+        );
+        const finalSearchText =
+          payloadToSearchText(payload) ||
+          String(finalSerializedValue || "")
+            .trim()
+            .toLowerCase();
+        const finalStatus = targetStatus || row.status;
+
+        if (
+          finalTypeId === row.type_id &&
+          finalSerializedValue === row.serialized_value &&
+          finalSearchText === (row.search_text || "") &&
+          finalStatus === row.status
+        ) {
+          skippedCount += 1;
+          continue;
+        }
+
+        if (
+          finalSerializedValue !== row.serialized_value &&
+          duplicateStmt.get(finalTypeId, finalSerializedValue, id)
+        ) {
+          skippedCount += 1;
+          continue;
+        }
+
+        updatedCount += updateStmt.run(
+          finalTypeId,
+          finalSerializedValue,
+          finalSearchText,
+          finalStatus,
+          id,
+        ).changes;
       }
-
-      const payload = parseJson(row.payload_json, {});
-      const finalTypeId = targetType ? targetType.id : row.type_id;
-      const finalFieldSchema = targetType
-        ? targetType.field_schema
-        : parseRedeemFieldSchema(row.field_schema);
-      const finalDelimiter = targetType
-        ? targetType.import_delimiter
-        : row.import_delimiter || "----";
-      const finalSerializedValue = serializeInventoryPayload(
-        finalFieldSchema,
-        payload,
-        finalDelimiter,
-      );
-      const finalSearchText =
-        payloadToSearchText(payload) ||
-        String(finalSerializedValue || "")
-          .trim()
-          .toLowerCase();
-      const finalStatus = targetStatus || row.status;
-
-      if (
-        finalTypeId === row.type_id &&
-        finalSerializedValue === row.serialized_value &&
-        finalSearchText === (row.search_text || "") &&
-        finalStatus === row.status
-      ) {
-        skippedCount += 1;
-        continue;
-      }
-
-      if (duplicateStmt.get(finalTypeId, finalSerializedValue, id)) {
-        skippedCount += 1;
-        continue;
-      }
-
-      updatedCount += updateStmt.run(
-        finalTypeId,
-        finalSerializedValue,
-        finalSearchText,
-        finalStatus,
-        id,
-      ).changes;
     }
 
     return {
@@ -1531,18 +1694,13 @@ export function deleteRedeemInventory(inventoryId) {
 }
 
 export function deleteRedeemInventoryBatch(ids) {
-  const targets = [
-    ...new Set(
-      (ids || [])
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0),
-    ),
-  ];
+  const targets = normalizeIdTargets(ids);
   const tx = db.transaction((items) => {
     let deleted = 0;
-    const stmt = db.prepare("DELETE FROM redeem_inventory WHERE id = ?");
-    for (const id of items) {
-      deleted += stmt.run(id).changes;
+    for (const chunk of chunkArray(items)) {
+      deleted += prepareCached(
+        `DELETE FROM redeem_inventory WHERE id IN (${placeholders(chunk.length)})`,
+      ).run(...chunk).changes;
     }
     return deleted;
   });
@@ -1858,10 +2016,15 @@ export function getRedeemCodesPaged({
           types.name AS type_name,
           types.slug AS type_slug
         FROM redeem_codes codes
+        JOIN (
+          SELECT id
+          FROM redeem_codes codes
+          ${where}
+          ORDER BY codes.id DESC
+          LIMIT ? OFFSET ?
+        ) page ON page.id = codes.id
         JOIN redeem_email_types types ON types.id = codes.type_id
-        ${where}
         ORDER BY codes.id DESC
-        LIMIT ? OFFSET ?
       `,
     )
     .all(...params, safePageSize, Math.max(0, (safePage - 1) * safePageSize));
@@ -2198,13 +2361,7 @@ export function updateRedeemCodeBatch(
   ids,
   { type_id = null, quantity = null } = {},
 ) {
-  const targets = [
-    ...new Set(
-      (ids || [])
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0),
-    ),
-  ];
+  const targets = normalizeIdTargets(ids);
   const nextTypeId =
     Number.isInteger(Number(type_id)) && Number(type_id) > 0
       ? Number(type_id)
@@ -2226,18 +2383,6 @@ export function updateRedeemCodeBatch(
   const tx = db.transaction((items, targetType, targetQuantity) => {
     let updatedCount = 0;
     let skippedCount = 0;
-    const selectStmt = db.prepare(
-      `
-        SELECT
-          codes.*,
-          types.name AS type_name,
-          types.slug AS type_slug
-        FROM redeem_codes codes
-        JOIN redeem_email_types types ON types.id = codes.type_id
-        WHERE codes.id = ?
-        LIMIT 1
-      `,
-    );
     const updateStmt = db.prepare(
       `
         UPDATE redeem_codes
@@ -2249,26 +2394,37 @@ export function updateRedeemCodeBatch(
       `,
     );
 
-    for (const id of items) {
-      const row = selectStmt.get(id);
-      if (!row || row.status === "redeemed") {
-        skippedCount += 1;
-        continue;
+    for (const chunk of chunkArray(items)) {
+      const rows = prepareCached(
+        `
+          SELECT codes.*
+          FROM redeem_codes codes
+          WHERE codes.id IN (${placeholders(chunk.length)})
+        `,
+      ).all(...chunk);
+      const rowById = new Map(rows.map((row) => [Number(row.id), row]));
+
+      for (const id of chunk) {
+        const row = rowById.get(id);
+        if (!row || row.status === "redeemed") {
+          skippedCount += 1;
+          continue;
+        }
+
+        const finalTypeId = targetType ? targetType.id : row.type_id;
+        const finalQuantity =
+          targetQuantity || Math.max(1, Number(row.quantity || 1));
+
+        if (
+          finalTypeId === row.type_id &&
+          finalQuantity === Number(row.quantity || 1)
+        ) {
+          skippedCount += 1;
+          continue;
+        }
+
+        updatedCount += updateStmt.run(finalTypeId, finalQuantity, id).changes;
       }
-
-      const finalTypeId = targetType ? targetType.id : row.type_id;
-      const finalQuantity =
-        targetQuantity || Math.max(1, Number(row.quantity || 1));
-
-      if (
-        finalTypeId === row.type_id &&
-        finalQuantity === Number(row.quantity || 1)
-      ) {
-        skippedCount += 1;
-        continue;
-      }
-
-      updatedCount += updateStmt.run(finalTypeId, finalQuantity, id).changes;
     }
 
     return {
@@ -2285,37 +2441,26 @@ export function updateRedeemCodeBatch(
 
 export function updateRedeemCodeStatusBatch(ids, status) {
   const nextStatus = status === "disabled" ? "disabled" : "unused";
-  const targets = [
-    ...new Set(
-      (ids || [])
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0),
-    ),
-  ];
+  const targets = normalizeIdTargets(ids);
 
   const tx = db.transaction((items, targetStatus) => {
     let updatedCount = 0;
-    let skippedCount = 0;
-    const selectStmt = db.prepare(
-      "SELECT id, status FROM redeem_codes WHERE id = ? LIMIT 1",
-    );
-    const updateStmt = db.prepare(
-      "UPDATE redeem_codes SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    );
 
-    for (const id of items) {
-      const row = selectStmt.get(id);
-      if (!row || row.status === "redeemed" || row.status === targetStatus) {
-        skippedCount += 1;
-        continue;
-      }
-
-      updatedCount += updateStmt.run(targetStatus, id).changes;
+    for (const chunk of chunkArray(items)) {
+      updatedCount += prepareCached(
+        `
+          UPDATE redeem_codes
+          SET status = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id IN (${placeholders(chunk.length)})
+            AND status != 'redeemed'
+            AND status != ?
+        `,
+      ).run(targetStatus, ...chunk, targetStatus).changes;
     }
 
     return {
       updated_count: updatedCount,
-      skipped_count: skippedCount,
+      skipped_count: items.length - updatedCount,
       total_count: items.length,
       status: targetStatus,
     };
@@ -2345,29 +2490,34 @@ export function deleteRedeemCode(codeId) {
 }
 
 export function deleteRedeemCodeBatch(ids) {
-  const targets = [
-    ...new Set(
-      (ids || [])
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0),
-    ),
-  ];
+  const targets = normalizeIdTargets(ids);
   const tx = db.transaction((items) => {
     let deletedCount = 0;
     let skippedCount = 0;
-    const selectStmt = db.prepare(
-      "SELECT id, status FROM redeem_codes WHERE id = ? LIMIT 1",
-    );
-    const deleteStmt = db.prepare("DELETE FROM redeem_codes WHERE id = ?");
+    const deletable = [];
 
-    for (const id of items) {
-      const row = selectStmt.get(id);
-      if (!row || row.status === "redeemed") {
-        skippedCount += 1;
-        continue;
+    for (const chunk of chunkArray(items)) {
+      const rows = prepareCached(
+        `SELECT id, status FROM redeem_codes WHERE id IN (${placeholders(chunk.length)})`,
+      ).all(...chunk);
+      const statusById = new Map(
+        rows.map((row) => [Number(row.id), row.status]),
+      );
+
+      for (const id of chunk) {
+        const status = statusById.get(id);
+        if (status === undefined || status === "redeemed") {
+          skippedCount += 1;
+          continue;
+        }
+        deletable.push(id);
       }
+    }
 
-      deletedCount += deleteStmt.run(id).changes;
+    for (const chunk of chunkArray(deletable)) {
+      deletedCount += prepareCached(
+        `DELETE FROM redeem_codes WHERE id IN (${placeholders(chunk.length)})`,
+      ).run(...chunk).changes;
     }
 
     return {
@@ -2439,71 +2589,52 @@ export function redeemByCode({
     const allowedProtocols = normalizeMailProtocols(codeRow.mail_protocols, [
       codeRow.mail_protocol,
     ]);
-    const protocolCounts = Object.fromEntries(
-      allowedProtocols.map((protocol) => {
-        const row = db
-          .prepare(
-            `
-              SELECT COUNT(*) AS count
-              FROM redeem_inventory inventory
-              WHERE
-                inventory.type_id = ?
-                AND inventory.status = 'available'
-                AND EXISTS (
-                  SELECT 1
-                  FROM json_each(
-                    CASE
-                      WHEN json_valid(inventory.pickup_protocols) THEN inventory.pickup_protocols
-                      ELSE json_array(?)
-                    END
-                  ) protocols
-                  WHERE protocols.value = ?
-                )
-            `,
-          )
-          .get(codeRow.type_id, codeRow.mail_protocol, protocol);
-        return [protocol, Number(row?.count || 0)];
-      }),
-    );
-    const selectedProtocol = allowedProtocols.find(
-      (protocol) => protocolCounts[protocol] >= quantity,
-    );
+    // 用物化标志列直接按索引取号：命中即选定协议，避免对 13w 行做 json_each 全表统计。
+    const selectAvailableByProtocol = {
+      imap: db.prepare(
+        `SELECT * FROM redeem_inventory WHERE type_id = ? AND status = 'available' AND pickup_imap = 1 ORDER BY id ASC LIMIT ?`,
+      ),
+      graph: db.prepare(
+        `SELECT * FROM redeem_inventory WHERE type_id = ? AND status = 'available' AND pickup_graph = 1 ORDER BY id ASC LIMIT ?`,
+      ),
+    };
+
+    let selectedProtocol = "";
+    let inventoryRows = [];
+    for (const protocol of allowedProtocols) {
+      const stmt = selectAvailableByProtocol[protocol];
+      if (!stmt) {
+        continue;
+      }
+
+      const rows = stmt.all(codeRow.type_id, quantity);
+      if (rows.length >= quantity) {
+        selectedProtocol = protocol;
+        inventoryRows = rows;
+        break;
+      }
+    }
 
     if (!selectedProtocol) {
+      // 失败路径才统计，用于给出可读的库存提示。
+      const countAvailableByProtocol = {
+        imap: db.prepare(
+          `SELECT COUNT(*) AS count FROM redeem_inventory WHERE type_id = ? AND status = 'available' AND pickup_imap = 1`,
+        ),
+        graph: db.prepare(
+          `SELECT COUNT(*) AS count FROM redeem_inventory WHERE type_id = ? AND status = 'available' AND pickup_graph = 1`,
+        ),
+      };
       const countSummary = allowedProtocols
-        .map(
-          (protocol) =>
-            `${protocol === "graph" ? "Graph" : "IMAP"} ${protocolCounts[protocol] || 0} 份`,
-        )
+        .map((protocol) => {
+          const row = countAvailableByProtocol[protocol]?.get(codeRow.type_id);
+          return `${protocol === "graph" ? "Graph" : "IMAP"} ${Number(row?.count || 0)} 份`;
+        })
         .join("，");
       throw new Error(
         `当前类型没有单一协议的足够库存，至少需要 ${quantity} 份（${countSummary}）`,
       );
     }
-
-    const inventoryRows = db
-      .prepare(
-        `
-          SELECT *
-          FROM redeem_inventory inventory
-          WHERE
-            inventory.type_id = ?
-            AND inventory.status = 'available'
-            AND EXISTS (
-              SELECT 1
-              FROM json_each(
-                CASE
-                  WHEN json_valid(inventory.pickup_protocols) THEN inventory.pickup_protocols
-                  ELSE json_array(?)
-                END
-              ) protocols
-              WHERE protocols.value = ?
-            )
-          ORDER BY inventory.id ASC
-          LIMIT ?
-        `,
-      )
-      .all(codeRow.type_id, codeRow.mail_protocol, selectedProtocol, quantity);
 
     if (inventoryRows.length < quantity) {
       throw new Error("库存领取冲突，请稍后重试");
@@ -2652,12 +2783,17 @@ export function getRedeemRecordsPaged({
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  // 只有关键词检索需要回表到 inventory 匹配 search_text，其余情况省掉这次 join。
+  const inventoryJoin = q
+    ? "LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id"
+    : "";
+
   const totalRow = db
     .prepare(
       `
         SELECT COUNT(DISTINCT records.code_id) AS total
         FROM redeem_records records
-        LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id
+        ${inventoryJoin}
         ${where}
       `,
     )
@@ -2668,26 +2804,22 @@ export function getRedeemRecordsPaged({
       `
         SELECT
           records.code_id,
-          records.type_id,
-          records.code,
-          records.normalized_code,
+          codes.type_id,
+          codes.code,
+          codes.normalized_code,
           types.name AS type_name,
           types.slug AS type_slug,
+          types.mail_protocol,
           COUNT(records.id) AS item_count,
           MAX(records.redeemed_at) AS redeemed_at,
           MAX(records.requester_ip) AS requester_ip,
           MAX(records.requester_user_agent) AS requester_user_agent
         FROM redeem_records records
-        JOIN redeem_email_types types ON types.id = records.type_id
-        LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id
+        ${inventoryJoin}
+        JOIN redeem_codes codes ON codes.id = records.code_id
+        JOIN redeem_email_types types ON types.id = codes.type_id
         ${where}
-        GROUP BY
-          records.code_id,
-          records.type_id,
-          records.code,
-          records.normalized_code,
-          types.name,
-          types.slug
+        GROUP BY records.code_id
         ORDER BY MAX(records.id) DESC
         LIMIT ? OFFSET ?
       `,

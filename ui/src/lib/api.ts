@@ -26,12 +26,19 @@ export type AdSlotAction = {
   href: string
 }
 
-export type AdSlotConfig = {
+// 单个广告位（一行中左/右其一）
+export type AdSlotItem = {
   enabled: boolean
   title: string
   description: string
   image_url: string
   primary_action: AdSlotAction
+}
+
+// 广告位配置：一行两个，slots[0] 为左、slots[1] 为右
+export type AdSlotConfig = {
+  enabled: boolean
+  slots: AdSlotItem[]
 }
 
 export type FaqConfig = {
@@ -403,6 +410,17 @@ function resolveApiUrl(url: string) {
   return `${API_BASE_URL}${url.startsWith("/") ? url : `/${url}`}`
 }
 
+// 解析后端静态资源地址（如上传的广告图 /uploads/ads/xxx.png）。
+// 当配置了 VITE_API_BASE_URL 且与前端不同源时，需要补上后端前缀。
+export function resolveAssetUrl(url: string | undefined | null) {
+  const value = String(url || "").trim()
+  if (!value || /^(https?:|data:|blob:)/i.test(value)) {
+    return value
+  }
+
+  return resolveApiUrl(value)
+}
+
 function createHeaders(
   token?: string,
   init?: HeadersInit,
@@ -627,6 +645,68 @@ export async function updateAdminAds(token: string, body: AdSlotConfig) {
     body,
   })
   return payload
+}
+
+export type AdImageUploadResult = {
+  image_url: string
+  filename: string
+  size: number
+  mimetype: string
+}
+
+export async function uploadAdminAdImage(
+  token: string,
+  file: File,
+  options: {
+    onUploadProgress?: (progress: number) => void
+  } = {}
+) {
+  const formData = new FormData()
+  formData.set("file", file)
+
+  return await new Promise<ApiEnvelope<AdImageUploadResult>>(
+    (resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open("POST", resolveApiUrl("/api/system/ads/upload"), true)
+
+      if (token) {
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          options.onUploadProgress?.(
+            Math.max(1, Math.min(99, Math.round((event.loaded / event.total) * 100)))
+          )
+        }
+      }
+
+      xhr.onerror = () => {
+        reject(new ApiError("图片上传失败，请稍后重试", 0, null))
+      }
+
+      xhr.onload = () => {
+        const payload = JSON.parse(
+          xhr.responseText || "null"
+        ) as ApiEnvelope<AdImageUploadResult> | null
+        if (xhr.status >= 200 && xhr.status < 300 && payload?.success) {
+          options.onUploadProgress?.(100)
+          resolve(payload)
+          return
+        }
+
+        reject(
+          new ApiError(
+            payload?.message || `图片上传失败 (${xhr.status})`,
+            xhr.status,
+            payload
+          )
+        )
+      }
+
+      xhr.send(formData)
+    }
+  )
 }
 
 export async function fetchAdminFaq(token: string, signal?: AbortSignal) {

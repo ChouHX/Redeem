@@ -38,7 +38,7 @@ import {
 } from "@/lib/shared"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { AdSlotCard } from "@/components/ad-slot-card"
+import { AdSlotRow } from "@/components/ad-slot-card"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import {
   Dialog,
@@ -801,11 +801,8 @@ export function MailConsole() {
         </header>
 
         {adSlot ? (
-          <AdSlotCard
-            title={adSlot.title}
-            description={adSlot.description}
-            imageUrl={adSlot.image_url}
-            primaryAction={adSlot.primary_action}
+          <AdSlotRow
+            slots={adSlot.slots}
             compact
             className="mb-3 shrink-0"
           />

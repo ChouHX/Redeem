@@ -19,6 +19,8 @@ export const FRONTEND_DIST_DIR =
   process.env.FRONTEND_DIST_DIR || path.join(ROOT_DIR, "ui", "dist");
 export const DB_PATH =
   process.env.DB_PATH || path.join(ROOT_DIR, "outlook_manager.db");
+export const UPLOAD_DIR =
+  process.env.UPLOAD_DIR || path.join(ROOT_DIR, "data", "uploads");
 
 export const PORT = Number(process.env.NODE_BACKEND_PORT || 5002);
 export const HOST = process.env.NODE_BACKEND_HOST || "0.0.0.0";

@@ -70,10 +70,33 @@ npm start
 - `ADMIN_TOKEN`，默认 `admin123`
 - `ADMIN_PATH`，默认 `/admin`
 - `DB_PATH`，默认 `./outlook_manager.db`
+- `UPLOAD_DIR`，广告位图片上传根目录，默认 `./data/uploads`（对外访问路径 `/uploads/ads/<文件名>`）
 - `REDEEM_ACCESS_TTL_MS`，兑换后账号数据保留时长，默认 `86400000`（24 小时）
 
 ## 测试
 
 ```bash
 npm test
+```
+
+## 查询性能
+
+数据量到 10w 级别后，以下几处做过针对性优化（详见 `src/db.js`）：
+
+- **取件协议物化列**：`redeem_inventory.pickup_imap` / `pickup_graph` 由 `pickup_protocols` 推导并建索引，
+  取代原先每次查询都对全表做 `json_each` 的写法；配套触发器保证两者永不失配。
+- **分页走覆盖索引**：`(筛选列…, id)` 复合索引 + 「先按索引取本页 id，再回表 join」的写法，
+  消除 `ORDER BY id DESC LIMIT` 的临时排序，深翻页也从秒级降到几十毫秒。
+- **批量操作分块**：批量改状态/删除改为分块 `IN (...)` 单语句，取代逐行 `SELECT` + `UPDATE`/`DELETE`。
+- **兑换取号**：按协议索引直接取号，命中即返回，不再先做两次全表计数。
+
+首次启动会自动迁移（加列 + 回填 + 建索引）。13w 行实测一次性迁移约 1.1s。
+
+基准脚本（造 13w 行临时库，不碰正式数据）：
+
+```bash
+npm run bench:queries      # 各查询/批量操作耗时 + 标志列一致性核对
+npm run bench:import       # 13w 行导入吞吐
+npm run bench:migration    # 模拟旧库升级的启动迁移耗时
+npm run verify:paging      # 分页结果与参考实现逐页比对
 ```

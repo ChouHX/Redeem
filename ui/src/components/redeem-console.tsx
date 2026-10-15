@@ -29,7 +29,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { AdSlotCard } from "@/components/ad-slot-card"
+import { AdSlotRow } from "@/components/ad-slot-card"
 import { ToolsTab } from "@/components/tools-tab"
 import { RichTextContent } from "@/components/rich-text-content"
 import {
@@ -508,19 +508,7 @@ export function RedeemConsole() {
 
         {adSlot?.enabled ? (
           <div className="mx-auto w-full max-w-4xl">
-            <AdSlotCard
-              title={adSlot.title}
-              description={adSlot.description}
-              imageUrl={adSlot.image_url}
-              primaryAction={
-                adSlot.primary_action.href
-                  ? {
-                      label: adSlot.primary_action.label,
-                      href: adSlot.primary_action.href,
-                    }
-                  : undefined
-              }
-            />
+            <AdSlotRow slots={adSlot.slots} />
           </div>
         ) : null}
 

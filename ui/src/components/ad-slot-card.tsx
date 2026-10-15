@@ -1,11 +1,7 @@
 import { Button } from "@/components/ui/button";
+import { resolveAssetUrl, type AdSlotAction, type AdSlotItem } from "@/lib/api";
 import { Gem } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-type AdSlotAction = {
-  label: string;
-  href: string;
-};
 
 interface AdSlotCardProps {
   title: string;
@@ -49,7 +45,7 @@ export function AdSlotCard({
           <div className="relative shrink-0">
             <div className="relative z-10 overflow-hidden rounded-xl border border-zinc-200 bg-zinc-100 shadow-sm size-14 transition-transform duration-500 group-hover:scale-105 dark:border-zinc-700/50 dark:bg-zinc-800">
               <img
-                src={imageUrl}
+                src={resolveAssetUrl(imageUrl)}
                 alt={title}
                 className="size-full object-cover"
                 loading="lazy"
@@ -100,6 +96,48 @@ export function AdSlotCard({
       </div>
 
       <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-zinc-500/10 to-transparent dark:via-zinc-400/20" />
+    </div>
+  );
+}
+
+interface AdSlotRowProps {
+  slots?: AdSlotItem[];
+  compact?: boolean;
+  className?: string;
+}
+
+/**
+ * 一行广告位：桌面端左右各一个，窄屏自动堆叠为上下两个。
+ * 只渲染 enabled 的广告位；没有可用广告位时不占用任何空间。
+ */
+export function AdSlotRow({ slots, compact = false, className }: AdSlotRowProps) {
+  const visibleSlots = (slots || []).filter(
+    (slot) => slot?.enabled && (slot.title || slot.description || slot.image_url)
+  );
+
+  if (!visibleSlots.length) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        "grid items-stretch gap-3",
+        visibleSlots.length > 1 && "sm:grid-cols-2",
+        className
+      )}
+    >
+      {visibleSlots.map((slot, index) => (
+        <AdSlotCard
+          key={`${slot.title}-${index}`}
+          title={slot.title}
+          description={slot.description}
+          imageUrl={slot.image_url}
+          primaryAction={slot.primary_action?.href ? slot.primary_action : undefined}
+          compact={compact}
+          className="h-full"
+        />
+      ))}
     </div>
   );
 }

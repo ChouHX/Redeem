@@ -12,6 +12,7 @@ import {
   GEMINI_PRO_API_TIMEOUT_MS,
   HOST,
   PORT,
+  UPLOAD_DIR,
 } from "./config.js";
 import {
   db,
@@ -92,19 +93,78 @@ const upload = multer({
     fileSize: 16 * 1024 * 1024,
   },
 });
-const DEFAULT_AD_SLOT = {
+
+// 广告位图片上传：落盘持久化，路径为 data/uploads/ads，公开访问路径为 /uploads/ads/xxx
+const AD_UPLOAD_SUBDIR = "ads";
+const AD_UPLOAD_DIR = path.join(UPLOAD_DIR, AD_UPLOAD_SUBDIR);
+const AD_UPLOAD_PUBLIC_PREFIX = "/uploads";
+const AD_IMAGE_MIME_EXTENSIONS = new Map([
+  ["image/png", ".png"],
+  ["image/jpeg", ".jpg"],
+  ["image/jpg", ".jpg"],
+  ["image/gif", ".gif"],
+  ["image/webp", ".webp"],
+  ["image/avif", ".avif"],
+  ["image/bmp", ".bmp"],
+  ["image/x-icon", ".ico"],
+  ["image/vnd.microsoft.icon", ".ico"],
+]);
+fs.mkdirSync(AD_UPLOAD_DIR, { recursive: true });
+
+const adImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_, __, cb) => cb(null, AD_UPLOAD_DIR),
+    filename: (_, file, cb) => {
+      const extension =
+        AD_IMAGE_MIME_EXTENSIONS.get(String(file.mimetype || "").toLowerCase()) ||
+        path.extname(String(file.originalname || "")).toLowerCase() ||
+        ".png";
+      const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      cb(null, `ad-${unique}${extension}`);
+    },
+  }),
+  limits: {
+    fileSize: 8 * 1024 * 1024,
+  },
+  fileFilter: (_, file, cb) => {
+    const mime = String(file.mimetype || "").toLowerCase();
+    if (AD_IMAGE_MIME_EXTENSIONS.has(mime)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("仅支持上传 PNG / JPG / GIF / WEBP / AVIF / BMP / ICO 图片"));
+  },
+});
+
+function buildAdImagePublicUrl(filename) {
+  return `${AD_UPLOAD_PUBLIC_PREFIX}/${AD_UPLOAD_SUBDIR}/${filename}`;
+}
+// 广告位：一行两个，左右各一。旧数据（单广告对象）会自动迁移到 slots[0]。
+const MAX_AD_SLOTS = 2;
+const DEFAULT_AD_SLOT_ITEM = {
   enabled: true,
   title: "自营发卡推荐",
   description: "本站同步提供多类数字商品，可直接前往发卡网下单。",
-  items: ["ChatGPT Plus 月卡", "Gemini 年卡", "Team 车位", "Outlook 邮箱"],
-  ticker_text:
-    "自营发卡推荐：ChatGPT Plus 月卡、Gemini 年卡、Team 车位、Outlook 邮箱",
   image_url: "",
-  image_alt: "广告图",
   primary_action: {
     label: "进入发卡网",
     href: "#",
   },
+};
+const DEFAULT_AD_SLOT = {
+  enabled: true,
+  slots: [
+    { ...DEFAULT_AD_SLOT_ITEM },
+    {
+      ...DEFAULT_AD_SLOT_ITEM,
+      title: "合作渠道推荐",
+      description: "更多合作渠道与优惠活动，点击按钮查看详情。",
+      primary_action: {
+        label: "查看详情",
+        href: "#",
+      },
+    },
+  ],
 };
 const DEFAULT_FAQ_HTML = `
 <h2>使用须知</h2>
@@ -179,33 +239,49 @@ function normalizeAdAction(value, fallback = { label: "", href: "" }) {
   return { label, href };
 }
 
-function normalizeAdSlotValue(value, fallback) {
+function normalizeAdSlotItem(value, fallback) {
+  const base = fallback || DEFAULT_AD_SLOT_ITEM;
   return {
-    enabled: parseBoolean(value?.enabled, Boolean(fallback.enabled)),
-    title: String(value?.title || fallback.title || "").trim(),
-    description: String(
-      value?.description || fallback.description || "",
-    ).trim(),
-    ticker_text: String(
-      value?.ticker_text || fallback.ticker_text || "",
-    ).trim(),
-    image_url: String(value?.image_url || fallback.image_url || "").trim(),
-    image_alt: String(value?.image_alt || fallback.image_alt || "").trim(),
-    items: Array.isArray(value?.items)
-      ? value.items
-          .map((item) => String(item || "").trim())
-          .filter(Boolean)
-          .slice(0, 6)
-      : Array.isArray(value?.highlights)
-        ? value.highlights
-            .map((item) => String(item || "").trim())
-            .filter(Boolean)
-            .slice(0, 6)
-        : fallback.items,
+    enabled: parseBoolean(value?.enabled, Boolean(base.enabled)),
+    title: String(value?.title || base.title || "").trim(),
+    description: String(value?.description || base.description || "").trim(),
+    image_url: String(value?.image_url || base.image_url || "").trim(),
     primary_action: normalizeAdAction(
       value?.primary_action,
-      fallback.primary_action,
+      base.primary_action,
     ),
+  };
+}
+
+function normalizeAdSlotValue(value, fallback = DEFAULT_AD_SLOT) {
+  const fallbackSlots = Array.isArray(fallback?.slots) ? fallback.slots : [];
+  const rawSlots = Array.isArray(value?.slots) ? value.slots : null;
+  // 旧结构：单广告对象直接平铺在配置里
+  const legacySlot =
+    !rawSlots && (value?.title || value?.description || value?.image_url)
+      ? value
+      : null;
+
+  const slots = Array.from({ length: MAX_AD_SLOTS }, (_, index) => {
+    const fallbackItem = fallbackSlots[index] || DEFAULT_AD_SLOT_ITEM;
+
+    if (rawSlots) {
+      return normalizeAdSlotItem(rawSlots[index], fallbackItem);
+    }
+
+    if (legacySlot && index === 0) {
+      return normalizeAdSlotItem(legacySlot, fallbackItem);
+    }
+
+    // 迁移旧数据时，第二个广告位默认关闭，避免历史站点突然多出一块空白广告
+    return index === 0
+      ? normalizeAdSlotItem(fallbackItem, fallbackItem)
+      : normalizeAdSlotItem({ enabled: false }, fallbackItem);
+  });
+
+  return {
+    enabled: parseBoolean(value?.enabled, fallback?.enabled !== false),
+    slots,
   };
 }
 
@@ -725,6 +801,44 @@ app.post("/api/system/ads", requireAdmin, (req, res) => {
   const adSlot = saveAdSlotConfig(req.body || {});
   res.json(ok(adSlot, "广告位配置更新成功"));
 });
+
+app.post(
+  "/api/system/ads/upload",
+  requireAdmin,
+  (req, res, next) => {
+    adImageUpload.single("file")(req, res, (error) => {
+      if (!error) {
+        next();
+        return;
+      }
+
+      const message =
+        error.code === "LIMIT_FILE_SIZE"
+          ? "图片过大，请上传 8MB 以内的图片"
+          : error.message || "图片上传失败";
+      logger.error("api_system_ads_upload_failed", { error });
+      res.status(400).json(fail(message));
+    });
+  },
+  (req, res) => {
+    if (!req.file) {
+      res.status(400).json(fail("请选择要上传的图片文件"));
+      return;
+    }
+
+    res.json(
+      ok(
+        {
+          image_url: buildAdImagePublicUrl(req.file.filename),
+          filename: req.file.filename,
+          size: req.file.size,
+          mimetype: req.file.mimetype,
+        },
+        "图片上传成功",
+      ),
+    );
+  },
+);
 
 app.get("/api/system/faq", requireAdmin, (_, res) => {
   res.json(ok({ html: getFaqHtml() }, "FAQ 配置获取成功"));
@@ -1690,6 +1804,18 @@ app.get("/api/redeem/admin/records/:codeId", requireAdmin, (req, res) => {
     ),
   );
 });
+
+app.use(
+  AD_UPLOAD_PUBLIC_PREFIX,
+  express.static(UPLOAD_DIR, {
+    index: false,
+    fallthrough: true,
+    maxAge: "7d",
+    setHeaders: (res) => {
+      res.setHeader("X-Content-Type-Options", "nosniff");
+    },
+  }),
+);
 
 app.use(express.static(FRONTEND_DIST_DIR, { index: false }));
 
