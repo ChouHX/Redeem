@@ -1,6 +1,15 @@
 # Redeem
 
-一个包含 Node.js 后端和 React + Vite 前端的兑换与邮件查看项目。
+一个包含后端和 React + Vite 前端的兑换与邮件查看项目。
+
+后端有两套实现，接口、数据库、前端完全互通，可按需二选一：
+
+| | 运行时 | 启动内存 | 说明 |
+|---|---|---|---|
+| Node 版 | Node.js 20+ | 约 90–120 MB | 原有实现，功能基线 |
+| **Go 版** | 单个静态二进制 | 约 25–40 MB | 重写实现，无 Node 运行时依赖 |
+
+两套共用同一个 SQLite 文件与同一套环境变量，可以原地切换、随时回滚。
 
 ## 功能
 
@@ -108,6 +117,76 @@ docker compose up -d --build
 ```bash
 npm test
 ```
+
+## Go 后端
+
+代码在 `backend/`，纯 Go 实现（SQLite 走 `modernc.org/sqlite`，不需要 cgo）。
+
+### 构建与启动
+
+```bash
+# 1. 先构建前端产物（Go 后端只负责托管静态文件）
+npm run build
+
+# 2. 编译后端
+cd backend && go build -o redeem-server ./cmd/server && cd ..
+
+# 3. 启动（环境变量与 Node 版完全一致）
+DB_PATH=./outlook_manager.db ./backend/redeem-server
+```
+
+二进制约 17 MB，静态链接，可直接拷到没有运行时的新主机上跑。
+
+### 容器
+
+```bash
+# 只起 Go 版
+docker compose --profile go up -d --build
+
+# 或直接用已发布镜像
+docker run -d --name redeem -p 5002:5002 \
+  -e ADMIN_TOKEN=your-token \
+  -v "$PWD/data:/app/data" \
+  ghcr.io/chouhx/redeem:latest-go
+```
+
+镜像标签带 `-go` 后缀（`latest-go`、`main-go`、`1.2.3-go` 等），Node 版仍是 `latest`。
+
+### 与 Node 版的一致性
+
+`scripts/parity-http.py` 会把同一份数据库复制两份，分别起 Node 与 Go 服务，
+发同一串请求并逐字段比对响应（读接口要求完全一致，写接口把随机卡密、
+时间戳等易变值归一化后比对）。
+
+```bash
+cp app.db node.db && cp app.db go.db
+DB_PATH=./node.db NODE_BACKEND_PORT=5101 node src/server.js &
+DB_PATH=./go.db   NODE_BACKEND_PORT=5102 ./backend/redeem-server &
+ADMIN_TOKEN=<库里的 admin_token> python3 scripts/parity-http.py
+```
+
+当前覆盖 55 个用例（目录、概览、类型、库存、卡密、记录、兑换链路、
+配置读写、错误路径、取件与上游代理的入参校验），差异为 0。
+
+Go 侧单元测试：
+
+```bash
+cd backend && go test ./...
+```
+
+已知的一处有意差异：后台库存列表里的 `type_mail_protocols`，Node 版的列表
+查询漏选了 `types.mail_protocols`，只能回落到单协议；Go 版补上了这一列。
+该字段前端不消费，仅服务端序列化使用，比对脚本里已标注忽略。
+
+### 迁移到 Go 版
+
+1. 停掉 Node 容器（SQLite 单写者，不能两个进程同时开同一个库）。
+2. 备份数据：`cp data/outlook_manager.db{,.bak}`。
+3. 可选，回收历史空间：`sqlite3 data/outlook_manager.db 'VACUUM;'`
+   （表结构迁移会留下空闲页，VACUUM 会重写文件；700 MB 级实测约 4 秒）。
+4. 起 Go 版，首次启动会自动跑与 Node 版相同的迁移（加列、回填、建索引、FTS 重建）。
+
+两套实现读写同一份 schema，回滚只需把容器换回 Node 版，不需要反向迁移。
 
 ## 查询性能
 

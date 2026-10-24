@@ -95,10 +95,10 @@ test("the trigger repairs flags when a writer forgets to set them", () => {
   // 直接写库、不提供标志列，模拟第三方写入路径。
   db.db
     .prepare(
-      `INSERT INTO redeem_inventory (type_id, payload_json, serialized_value, search_text, status, pickup_protocols)
-       VALUES (?, '{}', ?, ?, 'available', '["graph"]')`,
+      `INSERT INTO redeem_inventory (type_id, serialized_value, status, pickup_protocols)
+       VALUES (?, ?, 'available', '["graph"]')`,
     )
-    .run(type.id, "raw-graph@example.com----p----c----r", "raw-graph");
+    .run(type.id, "raw-graph@example.com----p----c----r");
 
   const row = db.db
     .prepare(

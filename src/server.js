@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import express from "express";
+import compression from "compression";
 import cors from "cors";
 import multer from "multer";
 import {
@@ -177,6 +178,20 @@ const DEFAULT_FAQ_HTML = `
 <p>已触发 7 天的号，如果登录网页提示绑定辅助邮箱，可在绑定提示页面保持不关闭，直接在原页面地址栏粘贴以下链接进入邮箱：</p>
 <p><a href="https://outlook.live.com/mail/0/" target="_blank" rel="noreferrer">https://outlook.live.com/mail/0/</a></p>
 `.trim();
+// 前端产物约 1MB（JS/CSS），接口列表 JSON 也可能上百 KB。
+// 不压缩时每次都要原样传输，弱网下首屏能差好几秒。
+app.use(
+  compression({
+    threshold: 1024,
+    // 图片/字体等已压缩内容交给 compressible 自动跳过
+    filter: (req, res) => {
+      if (req.headers["x-no-compression"]) {
+        return false;
+      }
+      return compression.filter(req, res);
+    },
+  }),
+);
 app.use(cors());
 app.use(express.json({ limit: "4mb" }));
 
@@ -333,6 +348,8 @@ function saveFaqHtml(value) {
 
 function sendFrontendIndex(res) {
   if (hasFrontendIndex) {
+    // index.html 引用了带哈希的资源，必须每次校验，否则发版后用户会拿到旧壳子。
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(frontendIndexPath);
     return;
   }
@@ -1817,7 +1834,17 @@ app.use(
   }),
 );
 
-app.use(express.static(FRONTEND_DIST_DIR, { index: false }));
+// Vite 产物文件名带内容哈希，可以放心长缓存；命中后浏览器不再发起协商请求。
+app.use(
+  "/assets",
+  express.static(path.join(FRONTEND_DIST_DIR, "assets"), {
+    index: false,
+    immutable: true,
+    maxAge: "1y",
+  }),
+);
+// 其余静态文件（favicon 等）保留短缓存。
+app.use(express.static(FRONTEND_DIST_DIR, { index: false, maxAge: "1h" }));
 
 app.get("/", (_, res) => sendFrontendIndex(res));
 app.get("/redeem", (_, res) => sendFrontendIndex(res));

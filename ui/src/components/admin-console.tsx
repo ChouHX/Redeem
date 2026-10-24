@@ -1130,12 +1130,9 @@ export function AdminConsole() {
     void (async () => {
       setCheckingAuth(true)
       try {
-        await verifyAdminToken(storedToken, controller.signal)
-        const [
-          nextOverview,
-          nextTypes,
-          nextInventory,
-        ] = await Promise.all([
+        // 三个请求并发发出：令牌随每个请求一起带，不必先单独 verify 再取数。
+        // 令牌失效时 requireAdmin 直接返回 401，判定语义与 verify 一致。
+        const [nextOverview, nextTypes, nextInventory] = await Promise.all([
           fetchAdminOverview(storedToken, controller.signal),
           fetchAdminTypes(storedToken, true, controller.signal),
           fetchAdminInventory(storedToken, {
@@ -1171,13 +1168,18 @@ export function AdminConsole() {
           })
           setGenerateTypeId((current) => current || String(firstType.id))
         }
-      } catch {
+      } catch (error) {
         if (controller.signal.aborted) {
           return
         }
-        sessionStorage.removeItem("admin_token")
         setAuthenticated(false)
-        setToken("")
+        // 只有令牌真的失效才清会话；网络抖动 / 5xx 保留 token，刷新即可重试。
+        if (error instanceof ApiError && error.status === 401) {
+          sessionStorage.removeItem("admin_token")
+          setToken("")
+        } else {
+          showErrorToast("后台加载失败", formatErrorMessage(error))
+        }
       } finally {
         if (!controller.signal.aborted) {
           setCheckingAuth(false)

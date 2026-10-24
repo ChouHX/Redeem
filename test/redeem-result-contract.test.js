@@ -29,7 +29,7 @@ after(() => {
       // Temporary test database files may not all exist on every platform.
     }
   }
-  process.exit(0);
+  setImmediate(() => process.exit(0));
 });
 
 async function post(pathname, body) {
@@ -186,13 +186,66 @@ test("result payload stays lean without duplicated type copies", async () => {
   const { body } = await post("/api/redeem/exchange", { code });
   const data = body.data;
 
+  // 每条结果只留自己的字段；类型信息统一放在根节点的 type 里，不再逐条复制。
   assert.deepEqual(Object.keys(data.items[0]).sort(), [
     "formatted_line",
     "mail_protocols",
     "payload",
   ]);
-  for (const redundant of ["fields", "payload", "formatted_line", "type"]) {
+  for (const redundant of ["fields", "payload", "formatted_line"]) {
     assert.equal(redundant in data, false, `${redundant} should not be on root`);
   }
+  assert.equal(data.type.id, type.id);
   assert.equal(data.items[0].formatted_line, data.items[0].payload.raw_line);
+});
+
+test("records keep a reference to inventory instead of copying the account", () => {
+  const columns = db.db
+    .prepare("SELECT name FROM pragma_table_info('redeem_records')")
+    .all()
+    .map((column) => column.name);
+
+  // 账号内容、卡密码、类型都只存在各自的主表里，记录表只留关联。
+  for (const removed of ["payload_json", "code", "normalized_code", "type_id"]) {
+    assert.equal(columns.includes(removed), false, `${removed} should be gone`);
+  }
+  for (const kept of ["code_id", "inventory_id", "payload_raw"]) {
+    assert.equal(columns.includes(kept), true, `${kept} should stay`);
+  }
+});
+
+test("a rotated refresh token is visible when the same code is opened again", async () => {
+  const type = createType("contract-rotate", ["imap", "graph"]);
+  const code = seedNarrowedAccount(
+    type,
+    "contract-rotate@example.com----pass----client----refresh-old",
+  );
+
+  const first = await post("/api/redeem/exchange", { code });
+  assert.equal(first.status, 200);
+  assert.match(first.body.data.items[0].formatted_line, /refresh-old$/);
+
+  const record = db.db
+    .prepare(
+      `
+        SELECT records.inventory_id
+        FROM redeem_records records
+        JOIN redeem_codes codes ON codes.id = records.code_id
+        WHERE codes.normalized_code = ?
+        LIMIT 1
+      `,
+    )
+    .get(code);
+  assert.ok(record?.inventory_id);
+
+  // 取件过程中 refresh_token 会轮换并写回库存；记录不存副本，
+  // 因此再次打开兑换码时必须看到新令牌，而不是兑换当时的旧快照。
+  assert.equal(
+    db.updateRedeemInventoryRefreshToken(record.inventory_id, "refresh-rotated"),
+    true,
+  );
+
+  const second = await post("/api/redeem/exchange", { code });
+  assert.equal(second.status, 200);
+  assert.match(second.body.data.items[0].formatted_line, /refresh-rotated$/);
 });

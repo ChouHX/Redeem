@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react"
+import { useEffect } from "react"
 import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
 import Link from "@tiptap/extension-link"
@@ -19,56 +19,12 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { sanitizeRichTextHtml } from "@/components/rich-text-view"
 import { cn } from "@/lib/utils"
 
-export function sanitizeRichTextHtml(html: string) {
-  const parser = new DOMParser()
-  const doc = parser.parseFromString(String(html || ""), "text/html")
-
-  doc
-    .querySelectorAll("script, iframe, object, embed, link, meta, base, form")
-    .forEach((node) => {
-      node.remove()
-    })
-
-  doc.querySelectorAll("*").forEach((element) => {
-    Array.from(element.attributes).forEach((attribute) => {
-      const name = attribute.name.toLowerCase()
-      const value = attribute.value || ""
-
-      if (name.startsWith("on")) {
-        element.removeAttribute(attribute.name)
-        return
-      }
-
-      if (
-        ["href", "src", "xlink:href", "action", "formaction"].includes(name) &&
-        /^\s*javascript:/i.test(value)
-      ) {
-        element.removeAttribute(attribute.name)
-      }
-    })
-  })
-
-  return doc.body.innerHTML
-}
-
-export function RichTextContent({
-  html,
-  className,
-}: {
-  html: string
-  className?: string
-}) {
-  const safeHtml = useMemo(() => sanitizeRichTextHtml(html), [html])
-
-  return (
-    <div
-      className={cn("rich-text-content", className)}
-      dangerouslySetInnerHTML={{ __html: safeHtml }}
-    />
-  )
-}
+// 只读渲染与 HTML 清洗已拆到 rich-text-view.tsx（无 tiptap 依赖），
+// 这里保留 re-export 以免后台侧引用路径变动。
+export { RichTextContent, sanitizeRichTextHtml } from "@/components/rich-text-view"
 
 function EditorToolbarButton({
   onClick,

@@ -24,3 +24,34 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  # Go 版后端：单个静态二进制，内存占用与启动时间都远低于 Node 版。
+  # 两套共用同一份 ./data，同一时间只能起一个（会抢同一个 SQLite 文件）。
+  outlook-manager-go:
+    profiles: ["go"]
+    build:
+      context: .
+      dockerfile: Dockerfile.go
+    container_name: outlook-manager-go
+    ports:
+      - "5003:5002"
+    environment:
+      NODE_BACKEND_HOST: 0.0.0.0
+      NODE_BACKEND_PORT: 5002
+      DB_PATH: /app/data/outlook_manager.db
+      UPLOAD_DIR: /app/data/uploads
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-admin123}
+      ADMIN_PATH: ${ADMIN_PATH:-admin}
+      GEMINI_PRO_API_BASE: ${GEMINI_PRO_API_BASE:-https://1688ai.vip}
+      GEMINI_PRO_API_TIMEOUT_MS: ${GEMINI_PRO_API_TIMEOUT_MS:-15000}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      # distroless 里没有 curl，用二进制自己发的请求探活。
+      test: ["CMD", "/app/redeem-server", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

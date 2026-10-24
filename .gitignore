@@ -16,6 +16,14 @@ __pycache__/
 data/
 server_data/
 
+# Go 后端
+backend/redeem-server
+backend/redeem-server.exe
+backend/tmp-*.db
+tmp-*.db
+tmp-parity-*
+tmp-node-parity.mjs
+
 release/*.tar.gz
 screenshots/
 

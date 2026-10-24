@@ -1,10 +1,5 @@
 import Database from "better-sqlite3";
-import {
-  DB_PATH,
-  CLIENT_ID,
-  DEFAULT_EMAIL_LIMIT,
-  REDEEM_ACCESS_TTL_MS,
-} from "./config.js";
+import { DB_PATH, CLIENT_ID, DEFAULT_EMAIL_LIMIT, REDEEM_ACCESS_TTL_MS } from "./config.js";
 import {
   DEFAULT_REDEEM_EMAIL_TYPE,
   generateRedeemCode,
@@ -13,12 +8,37 @@ import {
   normalizeMailProtocols,
   parseMailboxAccountLine,
   parseRedeemFieldSchema,
-  payloadToSearchText,
   serializeInventoryPayload,
 } from "./redeem.js";
 
 export const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
+
+// 以下参数默认值对 10w 行级库明显偏小，实测（13.5w 行 / 573MB）：
+//   mmap_size      : 全表扫描 164ms→71ms，深翻页 57ms→1.4ms
+//   cache_size     : 深翻页 57ms→2.4ms，批量写 286ms→125ms
+//   journal_size_limit: 否则 -wal 会一直涨（线上曾到 252MB）
+// synchronous 默认保持 FULL：改 NORMAL 写更快，但断电可能丢最后若干已提交事务，
+// 对发卡场景是资损风险，需要时用 SQLITE_SYNCHRONOUS=NORMAL 显式开启。
+const SQLITE_CACHE_MB = Number(process.env.SQLITE_CACHE_MB || 128);
+const SQLITE_MMAP_MB = Number(process.env.SQLITE_MMAP_MB || 256);
+const SQLITE_SYNCHRONOUS = String(process.env.SQLITE_SYNCHRONOUS || "FULL").toUpperCase();
+const SQLITE_JOURNAL_LIMIT_MB = Number(process.env.SQLITE_JOURNAL_LIMIT_MB || 64);
+
+if (Number.isFinite(SQLITE_CACHE_MB) && SQLITE_CACHE_MB > 0) {
+  db.pragma(`cache_size = -${Math.round(SQLITE_CACHE_MB * 1024)}`);
+}
+if (Number.isFinite(SQLITE_MMAP_MB) && SQLITE_MMAP_MB > 0) {
+  db.pragma(`mmap_size = ${Math.round(SQLITE_MMAP_MB * 1024 * 1024)}`);
+}
+if (["FULL", "NORMAL", "OFF"].includes(SQLITE_SYNCHRONOUS)) {
+  db.pragma(`synchronous = ${SQLITE_SYNCHRONOUS}`);
+}
+if (Number.isFinite(SQLITE_JOURNAL_LIMIT_MB) && SQLITE_JOURNAL_LIMIT_MB > 0) {
+  db.pragma(`journal_size_limit = ${Math.round(SQLITE_JOURNAL_LIMIT_MB * 1024 * 1024)}`);
+}
+db.pragma("temp_store = MEMORY");
+
 const shouldSeedDefaultRedeemType = !db
   .prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redeem_email_types' LIMIT 1",
@@ -75,11 +95,12 @@ CREATE TABLE IF NOT EXISTS redeem_email_types (
 CREATE TABLE IF NOT EXISTS redeem_inventory (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type_id INTEGER NOT NULL,
-  payload_json TEXT NOT NULL,
   serialized_value TEXT NOT NULL,
-  search_text TEXT NOT NULL DEFAULT '',
+  search_text TEXT GENERATED ALWAYS AS (lower(serialized_value)) STORED,
   status TEXT NOT NULL DEFAULT 'available',
   pickup_protocols TEXT NOT NULL DEFAULT '["imap"]',
+  pickup_imap INTEGER NOT NULL DEFAULT 0,
+  pickup_graph INTEGER NOT NULL DEFAULT 0,
   redeemed_code_id INTEGER,
   redeemed_at TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -101,14 +122,17 @@ CREATE TABLE IF NOT EXISTS redeem_codes (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+-- 兑换记录只保留「谁、什么时候、领了哪条库存」这三件事。
+-- 账号内容、类型、卡密号全部通过 inventory_id / code_id 关联读取，不存副本：
+-- 实测 6.96w 条记录里 payload_json 与 inventory.serialized_value 逐字节相等
+-- （3.9w 条 100% 一致），code/normalized_code/type_id 也与 redeem_codes 100% 相等。
+-- payload_raw 仅作兜底：历史上有 1000 条记录对应的库存行已被物理删除，
+-- 这些孤儿记录没有可关联对象，只有这一列能还原当时发的账号。
 CREATE TABLE IF NOT EXISTS redeem_records (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code_id INTEGER NOT NULL,
   inventory_id INTEGER NOT NULL,
-  type_id INTEGER NOT NULL,
-  code TEXT NOT NULL,
-  normalized_code TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
+  payload_raw TEXT,
   requester_ip TEXT DEFAULT '',
   requester_user_agent TEXT DEFAULT '',
   redeemed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -119,6 +143,147 @@ CREATE INDEX IF NOT EXISTS idx_email_cache_email ON email_cache(email);
 CREATE INDEX IF NOT EXISTS idx_redeem_types_active ON redeem_email_types(is_active);
 CREATE INDEX IF NOT EXISTS idx_redeem_codes_normalized_code ON redeem_codes(normalized_code);
 `);
+
+// --- 迁移：redeem_inventory 去掉 payload_json，search_text 改为生成列 ---
+// 旧结构把同一串数据存了三份（payload_json / serialized_value / search_text）。
+// 实测 13.5w 行：三列共 218MB，而真实信息只有 72MB；且 serialized_value 与
+// payload_json.raw_line、search_text 与 lower(serialized_value) 100% 相等。
+// payload 改为读取时按 { raw_line } 重建（比 JSON.parse 更快）。
+//
+// search_text 用 STORED 而非 VIRTUAL：两者都省掉冗余写入，但实测
+//   VIRTUAL 会让 FTS 全表扫描从 75ms 涨到 106ms（每行现算 lower()），
+//   STORED  则降到 71ms，文件仍是 466MB（原 573MB）。取 STORED。
+{
+  const inventoryColumns = db
+    .prepare("SELECT name FROM pragma_table_info('redeem_inventory')")
+    .all()
+    .map((column) => column.name);
+
+  if (inventoryColumns.includes("payload_json")) {
+    const existing = new Set(inventoryColumns);
+    const copyColumns = [
+      "id",
+      "type_id",
+      "serialized_value",
+      "status",
+      "pickup_protocols",
+      "pickup_imap",
+      "pickup_graph",
+      "redeemed_code_id",
+      "redeemed_at",
+      "created_at",
+      "updated_at",
+    ];
+    const selectList = copyColumns
+      .map((name) => {
+        if (existing.has(name)) return name;
+        if (name === "pickup_imap" || name === "pickup_graph") return "0";
+        if (name === "pickup_protocols") return `'["imap"]'`;
+        return "NULL";
+      })
+      .join(", ");
+
+    db.transaction(() => {
+      db.exec(`
+        DROP TRIGGER IF EXISTS redeem_inventory_fts_insert;
+        DROP TRIGGER IF EXISTS redeem_inventory_fts_delete;
+        DROP TRIGGER IF EXISTS redeem_inventory_fts_update;
+        DROP TABLE IF EXISTS redeem_inventory_fts;
+        DROP TABLE IF EXISTS redeem_inventory_v2;
+        CREATE TABLE redeem_inventory_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          type_id INTEGER NOT NULL,
+          serialized_value TEXT NOT NULL,
+          search_text TEXT GENERATED ALWAYS AS (lower(serialized_value)) STORED,
+          status TEXT NOT NULL DEFAULT 'available',
+          pickup_protocols TEXT NOT NULL DEFAULT '["imap"]',
+          pickup_imap INTEGER NOT NULL DEFAULT 0,
+          pickup_graph INTEGER NOT NULL DEFAULT 0,
+          redeemed_code_id INTEGER,
+          redeemed_at TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(type_id, serialized_value)
+        );
+        INSERT INTO redeem_inventory_v2 (${copyColumns.join(", ")})
+          SELECT ${selectList} FROM redeem_inventory;
+        DROP TABLE redeem_inventory;
+        ALTER TABLE redeem_inventory_v2 RENAME TO redeem_inventory;
+      `);
+    })();
+  }
+}
+
+// --- 迁移：redeem_records 去掉副本列，只留关联 ---
+// 旧结构每条记录都复制了一份账号内容（payload_json）、卡密码（code /
+// normalized_code）和类型（type_id），和 redeem_inventory / redeem_codes 完全重复。
+// 实测 6.96w 条：payload_json 38.94MB、code+normalized_code 1.86MB、type_id 0.07MB，
+// 而记录表总行字节只有 52.81MB —— 冗余占 77%。
+//
+// 迁移后读取改为 COALESCE(inventory.serialized_value, records.payload_raw)：
+//   · 库存行在 → 拿库存的最新值（这也顺带修掉了 refresh_token 轮换后
+//     记录里仍是旧令牌、24h 内重新打开兑换页会登录失败的问题）；
+//   · 库存行已被物理删除（线上有 1000 条这种孤儿记录）→ 退回 payload_raw 快照。
+{
+  const recordColumns = db
+    .prepare("SELECT name FROM pragma_table_info('redeem_records')")
+    .all()
+    .map((column) => column.name);
+
+  if (recordColumns.includes("payload_json")) {
+    const existing = new Set(recordColumns);
+    const hasInventory = db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redeem_inventory' LIMIT 1",
+      )
+      .get();
+    // 库存行是否还在，决定这条记录需不需要留快照。
+    const inventoryLookup = hasInventory
+      ? "LEFT JOIN redeem_inventory inv ON inv.id = records.inventory_id"
+      : "";
+    const inventoryMissing = hasInventory ? "inv.id IS NULL" : "1";
+    const payloadSource = existing.has("payload_json") ? "records.payload_json" : "NULL";
+
+    db.transaction(() => {
+      db.exec(`
+        DROP TABLE IF EXISTS redeem_records_v2;
+        CREATE TABLE redeem_records_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code_id INTEGER NOT NULL,
+          inventory_id INTEGER NOT NULL,
+          payload_raw TEXT,
+          requester_ip TEXT DEFAULT '',
+          requester_user_agent TEXT DEFAULT '',
+          redeemed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO redeem_records_v2 (
+          id, code_id, inventory_id, payload_raw,
+          requester_ip, requester_user_agent, redeemed_at
+        )
+        SELECT
+          records.id,
+          records.code_id,
+          records.inventory_id,
+          CASE WHEN ${inventoryMissing} THEN
+            CASE
+              WHEN json_valid(${payloadSource})
+                THEN COALESCE(json_extract(${payloadSource}, '$.raw_line'), ${payloadSource})
+              ELSE ${payloadSource}
+            END
+          ELSE NULL END,
+          ${existing.has("requester_ip") ? "records.requester_ip" : "''"},
+          ${existing.has("requester_user_agent") ? "records.requester_user_agent" : "''"},
+          ${existing.has("redeemed_at") ? "records.redeemed_at" : "CURRENT_TIMESTAMP"}
+        FROM redeem_records records
+        ${inventoryLookup};
+        DROP TABLE redeem_records;
+        ALTER TABLE redeem_records_v2 RENAME TO redeem_records;
+      `);
+    })();
+  }
+}
+
+
 
 const shouldRebuildInventorySearch = !db
   .prepare(
@@ -146,8 +311,10 @@ AFTER DELETE ON redeem_inventory BEGIN
   INSERT INTO redeem_inventory_fts(redeem_inventory_fts, rowid, search_text)
   VALUES ('delete', old.id, old.search_text);
 END;
+-- search_text 是生成列，只能随 serialized_value 变化而变化，
+-- 因此同步触发器必须挂在 serialized_value 上（挂 search_text 永远不会触发）。
 CREATE TRIGGER IF NOT EXISTS redeem_inventory_fts_update
-AFTER UPDATE OF search_text ON redeem_inventory BEGIN
+AFTER UPDATE OF serialized_value ON redeem_inventory BEGIN
   INSERT INTO redeem_inventory_fts(redeem_inventory_fts, rowid, search_text)
   VALUES ('delete', old.id, old.search_text);
   INSERT INTO redeem_inventory_fts(rowid, search_text)
@@ -270,8 +437,6 @@ CREATE INDEX IF NOT EXISTS idx_redeem_codes_type_status_id
   ON redeem_codes(type_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_redeem_records_code_id_id
   ON redeem_records(code_id, id);
-CREATE INDEX IF NOT EXISTS idx_redeem_records_type_code_id
-  ON redeem_records(type_id, code_id, id);
 `);
 
 // 清理被新索引前缀覆盖的旧索引，减少每次写入的索引维护开销。
@@ -281,6 +446,8 @@ DROP INDEX IF EXISTS idx_redeem_inventory_type_status;
 DROP INDEX IF EXISTS idx_redeem_codes_type_status;
 DROP INDEX IF EXISTS idx_redeem_records_type_id;
 DROP INDEX IF EXISTS idx_redeem_records_code_id;
+-- 记录表不再冗余 type_id，按类型筛选改走 redeem_codes.type_id，这个索引失去前缀。
+DROP INDEX IF EXISTS idx_redeem_records_type_code_id;
 `);
 
 // 标志列兜底：pickup_imap / pickup_graph 必须与 pickup_protocols 一致。
@@ -329,14 +496,6 @@ function clampPositiveInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
   }
 
   return Math.min(parsed, max);
-}
-
-function parseJson(value, fallback) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
 }
 
 // 由 pickup_protocols 推导物化标志列，供所有写入路径复用。
@@ -419,8 +578,9 @@ function buildRedeemTypeSelect() {
       ) AS available_code_count,
       (
         SELECT COUNT(*)
-        FROM redeem_records records
-        WHERE records.type_id = t.id
+        FROM redeem_codes codes
+        JOIN redeem_records records ON records.code_id = codes.id
+        WHERE codes.type_id = t.id
       ) AS redeemed_count
     FROM redeem_email_types t
   `;
@@ -481,7 +641,7 @@ function rowToRedeemInventory(row) {
       row.mail_protocol,
     ]),
     import_delimiter: row.import_delimiter || "----",
-    payload: parseJson(row.payload_json, {}),
+    payload: { raw_line: row.serialized_value || "" },
     serialized_value: row.serialized_value || "",
     search_text: row.search_text || "",
     status: row.status,
@@ -734,7 +894,8 @@ function rowToRedeemRecord(row) {
       row.mail_protocol,
     ]),
     import_delimiter: row.import_delimiter || "----",
-    payload: parseJson(row.payload_json, {}),
+    // 记录不再存账号副本：优先用库存行当前值，孤儿记录才退回快照。
+    payload: { raw_line: row.payload_raw || "" },
     requester_ip: row.requester_ip || "",
     requester_user_agent: row.requester_user_agent || "",
     redeemed_at: row.redeemed_at || "",
@@ -927,7 +1088,7 @@ export function getMailboxAccountFromInventory(email) {
     .all();
 
   for (const row of rows) {
-    const payload = parseJson(row.payload_json, {});
+    const payload = { raw_line: row.serialized_value || "" };
     const credentials = extractMailboxCredentials(payload);
     if (!credentials) {
       continue;
@@ -992,41 +1153,32 @@ export function updateRedeemInventoryPayload(inventoryId, payload) {
     payload,
     delimiter,
   );
-  const searchText =
-    payloadToSearchText(payload) || serializedValue.toLowerCase();
 
   const result = db
     .prepare(
       `
         UPDATE redeem_inventory
         SET
-          payload_json = ?,
           serialized_value = ?,
-          search_text = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `,
     )
-    .run(
-      JSON.stringify(payload),
-      serializedValue,
-      searchText,
-      Number(inventoryId),
-    );
+    .run(serializedValue, Number(inventoryId));
 
   return result.changes > 0;
 }
 
 export function updateRedeemInventoryRefreshToken(inventoryId, refreshToken) {
   const row = db
-    .prepare("SELECT payload_json FROM redeem_inventory WHERE id = ? LIMIT 1")
+    .prepare("SELECT serialized_value FROM redeem_inventory WHERE id = ? LIMIT 1")
     .get(Number(inventoryId));
   const nextRefreshToken = String(refreshToken || "").trim();
   if (!row || !nextRefreshToken) {
     return false;
   }
 
-  const payload = parseJson(row.payload_json, {});
+  const payload = { raw_line: row.serialized_value || "" };
   const credentials = extractMailboxCredentials(payload);
   if (!credentials || credentials.refresh_token === nextRefreshToken) {
     return false;
@@ -1195,8 +1347,14 @@ export function deleteRedeemEmailType(typeId) {
 
     // Records reference both inventory and codes, so remove them first even
     // though older databases do not declare foreign-key constraints.
+    // 记录表不再存 type_id，按该类型的卡密反查。
     const deletedRecordCount = db
-      .prepare("DELETE FROM redeem_records WHERE type_id = ?")
+      .prepare(
+        `
+          DELETE FROM redeem_records
+          WHERE code_id IN (SELECT id FROM redeem_codes WHERE type_id = ?)
+        `,
+      )
       .run(id).changes;
     const deletedInventoryCount = db
       .prepare("DELETE FROM redeem_inventory WHERE type_id = ?")
@@ -1407,9 +1565,7 @@ export function importRedeemInventory({
       `
         INSERT OR IGNORE INTO redeem_inventory (
           type_id,
-          payload_json,
           serialized_value,
-          search_text,
           pickup_protocols,
           pickup_imap,
           pickup_graph,
@@ -1417,7 +1573,7 @@ export function importRedeemInventory({
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'available', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, 'available', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `,
     );
     const existingStmt = db.prepare(
@@ -1436,13 +1592,10 @@ export function importRedeemInventory({
           payload,
           targetType.import_delimiter,
         );
-      const searchText = item.search_text || payloadToSearchText(payload);
       const flags = protocolFlags(pickupProtocols);
       const result = insertStmt.run(
         targetType.id,
-        JSON.stringify(payload),
         serializedValue,
-        searchText,
         JSON.stringify(pickupProtocols),
         flags.pickup_imap,
         flags.pickup_graph,
@@ -1589,7 +1742,6 @@ export function updateRedeemInventoryBatch(
         SET
           type_id = ?,
           serialized_value = ?,
-          search_text = ?,
           status = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
@@ -1626,7 +1778,7 @@ export function updateRedeemInventoryBatch(
           continue;
         }
 
-        const payload = parseJson(row.payload_json, {});
+        const payload = { raw_line: row.serialized_value || "" };
         const finalTypeId = targetType ? targetType.id : row.type_id;
         const finalFieldSchema = targetType
           ? targetType.field_schema
@@ -1639,17 +1791,11 @@ export function updateRedeemInventoryBatch(
           payload,
           finalDelimiter,
         );
-        const finalSearchText =
-          payloadToSearchText(payload) ||
-          String(finalSerializedValue || "")
-            .trim()
-            .toLowerCase();
         const finalStatus = targetStatus || row.status;
 
         if (
           finalTypeId === row.type_id &&
           finalSerializedValue === row.serialized_value &&
-          finalSearchText === (row.search_text || "") &&
           finalStatus === row.status
         ) {
           skippedCount += 1;
@@ -1667,7 +1813,6 @@ export function updateRedeemInventoryBatch(
         updatedCount += updateStmt.run(
           finalTypeId,
           finalSerializedValue,
-          finalSearchText,
           finalStatus,
           id,
         ).changes;
@@ -2158,7 +2303,17 @@ export function getRedeemRecordsByCodeId(codeId) {
     .prepare(
       `
         SELECT
-          records.*,
+          records.id,
+          records.code_id,
+          records.inventory_id,
+          records.requester_ip,
+          records.requester_user_agent,
+          records.redeemed_at,
+          -- 账号内容只在库存表里存一份；孤儿记录退回 payload_raw 快照。
+          COALESCE(inventory.serialized_value, records.payload_raw) AS payload_raw,
+          codes.type_id,
+          codes.code,
+          codes.normalized_code,
           types.name AS type_name,
           types.slug AS type_slug,
           types.description AS type_description,
@@ -2168,7 +2323,8 @@ export function getRedeemRecordsByCodeId(codeId) {
           inventory.pickup_protocols,
           types.import_delimiter
         FROM redeem_records records
-        JOIN redeem_email_types types ON types.id = records.type_id
+        JOIN redeem_codes codes ON codes.id = records.code_id
+        JOIN redeem_email_types types ON types.id = codes.type_id
         LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id
         WHERE records.code_id = ?
         ORDER BY records.id ASC
@@ -2200,7 +2356,16 @@ export function getRedeemRecordsByCodeIdPaged(
     .prepare(
       `
         SELECT
-          records.*,
+          records.id,
+          records.code_id,
+          records.inventory_id,
+          records.requester_ip,
+          records.requester_user_agent,
+          records.redeemed_at,
+          COALESCE(inventory.serialized_value, records.payload_raw) AS payload_raw,
+          codes.type_id,
+          codes.code,
+          codes.normalized_code,
           types.name AS type_name,
           types.slug AS type_slug,
           types.description AS type_description,
@@ -2210,7 +2375,8 @@ export function getRedeemRecordsByCodeIdPaged(
           inventory.pickup_protocols,
           types.import_delimiter
         FROM redeem_records records
-        JOIN redeem_email_types types ON types.id = records.type_id
+        JOIN redeem_codes codes ON codes.id = records.code_id
+        JOIN redeem_email_types types ON types.id = codes.type_id
         LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id
         WHERE records.code_id = ?
         ORDER BY records.id ASC
@@ -2655,20 +2821,17 @@ export function redeemByCode({
         WHERE id = ? AND status = 'available'
       `,
     );
+    // 只写关联关系，不再复制账号内容 / 卡密码 / 类型：这些都能按 id 查到。
     const insertRecordStmt = db.prepare(
       `
         INSERT INTO redeem_records (
           code_id,
           inventory_id,
-          type_id,
-          code,
-          normalized_code,
-          payload_json,
           requester_ip,
           requester_user_agent,
           redeemed_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
       `,
     );
     const inventories = [];
@@ -2688,10 +2851,6 @@ export function redeemByCode({
       const recordResult = insertRecordStmt.run(
         codeRow.id,
         inventoryRow.id,
-        codeRow.type_id,
-        codeRow.code,
-        codeRow.normalized_code,
-        inventoryRow.payload_json,
         requesterIp,
         requesterUserAgent,
         redeemedAt,
@@ -2769,13 +2928,14 @@ export function getRedeemRecordsPaged({
   const params = [];
 
   if (type_id) {
-    conditions.push("records.type_id = ?");
+    // 记录表不再存 type_id：类型归属只存在于 redeem_codes，按 code_id 关联判断。
+    conditions.push("codes.type_id = ?");
     params.push(Number(type_id));
   }
 
   if (q) {
     conditions.push(
-      "(records.normalized_code LIKE ? OR inventory.search_text LIKE ?)",
+      "(codes.normalized_code LIKE ? OR inventory.search_text LIKE ?)",
     );
     const search = `%${normalizeRedeemCode(q)}%`;
     const fuzzy = `%${String(q).trim().toLowerCase()}%`;
@@ -2787,12 +2947,17 @@ export function getRedeemRecordsPaged({
   const inventoryJoin = q
     ? "LEFT JOIN redeem_inventory inventory ON inventory.id = records.inventory_id"
     : "";
+  // 类型 / 卡密码筛选都要走 codes，没筛选条件时不必 join。
+  const codesJoin = conditions.length
+    ? "JOIN redeem_codes codes ON codes.id = records.code_id"
+    : "";
 
   const totalRow = db
     .prepare(
       `
         SELECT COUNT(DISTINCT records.code_id) AS total
         FROM redeem_records records
+        ${codesJoin}
         ${inventoryJoin}
         ${where}
       `,

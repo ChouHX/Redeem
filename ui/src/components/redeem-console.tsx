@@ -31,7 +31,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { AdSlotRow } from "@/components/ad-slot-card"
 import { ToolsTab } from "@/components/tools-tab"
-import { RichTextContent } from "@/components/rich-text-content"
+import { RichTextContent } from "@/components/rich-text-view"
 import {
   Card,
   CardAction,
