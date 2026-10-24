@@ -753,7 +753,9 @@ export function AdminConsole() {
   )
   const inventoryImportFileInputRef = useRef<HTMLInputElement | null>(null)
   const tokenRef = useRef("")
-  const lazyTabLoadsRef = useRef(new Set<string>())
+  // 记录"正在请求中"的 tab。用它而不是"已请求过"来去重，
+  // 这样某次请求失败后再次切回该 tab 仍会重试，不会永远停在空表格。
+  const inFlightTabsRef = useRef(new Set<string>())
 
   const inventoryImportType = types.find(
     (type) => String(type.id) === inventoryImportTypeId
@@ -871,7 +873,7 @@ export function AdminConsole() {
     setInventory(null)
     setCodes(null)
     setRecords(null)
-    lazyTabLoadsRef.current.clear()
+    inFlightTabsRef.current.clear()
     setGeneratedCodes([])
     setInventoryImportFile(null)
     setInventoryImportProgress(null)
@@ -1070,23 +1072,31 @@ export function AdminConsole() {
     return Promise.resolve()
   }
 
-  function handleActiveTabChange(nextTab: string) {
-    setActiveTab(nextTab)
-    if (!authenticated || !token || lazyTabLoadsRef.current.has(nextTab)) {
-      return
-    }
-
+  // 某个 tab 的数据还没拿到就补一次；同一 tab 并发点击只发一个请求。
+  function ensureTabData(tab: string, activeToken = token) {
     const needsLoad =
-      (nextTab === "ads" && !adSlot) ||
-      (nextTab === "faq" && !faq) ||
-      (nextTab === "codes" && !codes) ||
-      (nextTab === "records" && !records)
-    if (!needsLoad) {
+      (tab === "ads" && !adSlot) ||
+      (tab === "faq" && !faq) ||
+      (tab === "codes" && !codes) ||
+      (tab === "records" && !records)
+    if (!needsLoad || inFlightTabsRef.current.has(tab)) {
+      return Promise.resolve()
+    }
+
+    inFlightTabsRef.current.add(tab)
+    return loadAdminTab(tab, activeToken).finally(() => {
+      inFlightTabsRef.current.delete(tab)
+    })
+  }
+
+  function handleActiveTabChange(nextTab: string) {
+    // 先切再取：tab 高亮和骨架屏立刻出现，不等接口返回。
+    setActiveTab(nextTab)
+    if (!authenticated || !token) {
       return
     }
 
-    lazyTabLoadsRef.current.add(nextTab)
-    void loadAdminTab(nextTab, token)
+    void ensureTabData(nextTab, token)
   }
 
   async function restoreSession(nextToken: string, silent = false) {
@@ -1189,6 +1199,31 @@ export function AdminConsole() {
 
     return () => controller.abort()
   }, [])
+
+  // 登录后趁浏览器空闲把其余 tab 的数据先取回来。
+  // 后台在跨境线路上单次请求 200-600ms，预取之后切 tab 基本是瞬开。
+  useEffect(() => {
+    if (!authenticated || !token) {
+      return
+    }
+
+    const prefetch = () => {
+      for (const tab of ["codes", "records", "ads", "faq"]) {
+        void ensureTabData(tab, token)
+      }
+    }
+
+    // 部分浏览器没有 requestIdleCallback，降级成延迟执行。
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(prefetch, { timeout: 2000 })
+      return () => window.cancelIdleCallback(handle)
+    }
+
+    const timer = window.setTimeout(prefetch, 600)
+    return () => window.clearTimeout(timer)
+    // ensureTabData 每次都重建，但它只读 ref 和当次快照，不需要进依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authenticated, token])
 
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -2189,6 +2224,14 @@ export function AdminConsole() {
   const hiddenRecordDetailCount = recordDetail
     ? Math.max(0, recordDetail.items.length - MAX_RECORD_PREVIEW_ITEMS)
     : 0
+  // 任意一个后台请求在跑就亮顶部进度条，避免页面看起来像卡住。
+  const adminBusy =
+    inventoryLoading ||
+    codesLoading ||
+    recordsLoading ||
+    overviewLoading ||
+    adsLoading ||
+    faqLoading
 
   if (checkingAuth) {
     return (
@@ -2398,7 +2441,11 @@ export function AdminConsole() {
             </TabsList>
           </div>
 
-          <TabsContent value="types">
+          {adminBusy ? (
+            <div className="admin-loading-bar mb-1" aria-hidden="true" />
+          ) : null}
+
+          <TabsContent value="types" className="admin-panel-enter">
             <div className="flex flex-col gap-4">
               <Card className="border border-border/70 bg-card/95">
                 <CardHeader className="border-b border-border/70">
@@ -2516,7 +2563,7 @@ export function AdminConsole() {
             </div>
           </TabsContent>
 
-          <TabsContent value="inventory">
+          <TabsContent value="inventory" className="admin-panel-enter">
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction className="flex flex-wrap gap-2">
@@ -2726,7 +2773,9 @@ export function AdminConsole() {
                   </TableHeader>
                   <TableBody>
                     {inventoryLoading ? (
-                      Array.from({ length: 4 }).map((_, index) => (
+                      Array.from({
+                        length: Math.max(1, inventoryFilters.pageSize),
+                      }).map((_, index) => (
                         <TableRow key={index}>
                           <TableCell className="px-4">
                             <Skeleton className="size-4" />
@@ -2905,7 +2954,7 @@ export function AdminConsole() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="codes">
+          <TabsContent value="codes" className="admin-panel-enter">
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction className="flex flex-wrap gap-2">
@@ -3143,7 +3192,9 @@ export function AdminConsole() {
                   </TableHeader>
                   <TableBody>
                     {codesLoading ? (
-                      Array.from({ length: 4 }).map((_, index) => (
+                      Array.from({
+                        length: Math.max(1, codeFilters.pageSize),
+                      }).map((_, index) => (
                         <TableRow key={index}>
                           <TableCell className="px-4">
                             <Skeleton className="size-4" />
@@ -3337,7 +3388,7 @@ export function AdminConsole() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="ads">
+          <TabsContent value="ads" className="admin-panel-enter">
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction>
@@ -3391,7 +3442,7 @@ export function AdminConsole() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="faq">
+          <TabsContent value="faq" className="admin-panel-enter">
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction>
@@ -3452,7 +3503,7 @@ export function AdminConsole() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="records">
+          <TabsContent value="records" className="admin-panel-enter">
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardTitle>兑换记录</CardTitle>
@@ -3528,7 +3579,9 @@ export function AdminConsole() {
                   </TableHeader>
                   <TableBody>
                     {recordsLoading ? (
-                      Array.from({ length: 4 }).map((_, index) => (
+                      Array.from({
+                        length: Math.max(1, recordFilters.pageSize),
+                      }).map((_, index) => (
                         <TableRow key={index}>
                           <TableCell className="px-4">
                             <Skeleton className="h-4 w-32" />

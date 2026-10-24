@@ -401,3 +401,48 @@
   0% { transform: translateX(0); }
   100% { transform: translateX(calc(-50% - 1rem)); }
 }
+
+/* 后台数据加载反馈：顶部细进度条 + 表格淡入。
+   切 tab 时接口通常 200-600ms，给一个持续移动的条，避免看起来像卡死。 */
+.admin-loading-bar {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--border) 60%, transparent);
+}
+
+.admin-loading-bar::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  width: 40%;
+  background: var(--primary);
+  border-radius: 9999px;
+  animation: admin-loading-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes admin-loading-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+.admin-panel-enter {
+  animation: admin-panel-fade 180ms ease-out;
+}
+
+@keyframes admin-panel-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-loading-bar::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+
+  .admin-panel-enter {
+    animation: none;
+  }
+}
