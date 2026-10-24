@@ -65,6 +65,9 @@ export function RichTextEditor({
         heading: {
           levels: [2],
         },
+        // StarterKit v3 自带 Link 扩展，这里必须关掉，
+        // 否则会和下面单独注册的 Link 重名（控制台报 duplicate extension names）。
+        link: false,
       }),
       Link.configure({
         autolink: true,

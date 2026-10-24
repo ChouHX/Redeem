@@ -140,8 +140,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { createTextExportFilename, downloadTextFile } from "@/lib/utils"
@@ -627,6 +628,42 @@ function AdSlotEditorCard({
   )
 }
 
+// 面板首次访问后常驻，之后切回来只切换显示。
+// Radix 的 TabsContent 在切走时会卸载，切回库存/卡密要重建整张表（每行还带一个
+// 下拉菜单），这就是切 tab 那一下卡顿的来源；常驻之后切换只剩 display 变化。
+function TabPanel({
+  value,
+  active,
+  mounted,
+  children,
+}: {
+  value: string
+  active: string
+  mounted: boolean
+  children: React.ReactNode
+}) {
+  if (!mounted) {
+    return null
+  }
+
+  const isActive = active === value
+
+  return (
+    <div
+      role="tabpanel"
+      data-slot="tabs-content"
+      data-tab={value}
+      hidden={!isActive}
+      className={cn(
+        "flex-1 text-xs/relaxed outline-none",
+        isActive && "admin-panel-enter"
+      )}
+    >
+      {children}
+    </div>
+  )
+}
+
 export function AdminConsole() {
   const [token, setToken] = useState("")
   const [tokenInput, setTokenInput] = useState("")
@@ -635,6 +672,10 @@ export function AdminConsole() {
     Boolean(sessionStorage.getItem("admin_token"))
   )
   const [activeTab, setActiveTab] = useState("inventory")
+  // 已经挂载过的面板。默认把当前 tab 算进去，其余在首次切过去时加入。
+  const [mountedTabs, setMountedTabs] = useState<Set<string>>(
+    () => new Set(["inventory"])
+  )
   const [overview, setOverview] = useState<AdminOverview | null>(null)
   const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
   const [faq, setFaq] = useState<FaqConfig | null>(null)
@@ -1091,6 +1132,9 @@ export function AdminConsole() {
 
   function handleActiveTabChange(nextTab: string) {
     // 先切再取：tab 高亮和骨架屏立刻出现，不等接口返回。
+    setMountedTabs((current) =>
+      current.has(nextTab) ? current : new Set(current).add(nextTab)
+    )
     setActiveTab(nextTab)
     if (!authenticated || !token) {
       return
@@ -2445,7 +2489,11 @@ export function AdminConsole() {
             <div className="admin-loading-bar mb-1" aria-hidden="true" />
           ) : null}
 
-          <TabsContent value="types" className="admin-panel-enter">
+          <TabPanel
+            value="types"
+            active={activeTab}
+            mounted={mountedTabs.has("types") || activeTab === "types"}
+          >
             <div className="flex flex-col gap-4">
               <Card className="border border-border/70 bg-card/95">
                 <CardHeader className="border-b border-border/70">
@@ -2561,9 +2609,13 @@ export function AdminConsole() {
                 </CardContent>
               </Card>
             </div>
-          </TabsContent>
+          </TabPanel>
 
-          <TabsContent value="inventory" className="admin-panel-enter">
+          <TabPanel
+            value="inventory"
+            active={activeTab}
+            mounted={mountedTabs.has("inventory") || activeTab === "inventory"}
+          >
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction className="flex flex-wrap gap-2">
@@ -2952,9 +3004,13 @@ export function AdminConsole() {
                 />
               </CardContent>
             </Card>
-          </TabsContent>
+          </TabPanel>
 
-          <TabsContent value="codes" className="admin-panel-enter">
+          <TabPanel
+            value="codes"
+            active={activeTab}
+            mounted={mountedTabs.has("codes") || activeTab === "codes"}
+          >
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction className="flex flex-wrap gap-2">
@@ -3386,9 +3442,13 @@ export function AdminConsole() {
                 />
               </CardContent>
             </Card>
-          </TabsContent>
+          </TabPanel>
 
-          <TabsContent value="ads" className="admin-panel-enter">
+          <TabPanel
+            value="ads"
+            active={activeTab}
+            mounted={mountedTabs.has("ads") || activeTab === "ads"}
+          >
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction>
@@ -3440,9 +3500,13 @@ export function AdminConsole() {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </TabPanel>
 
-          <TabsContent value="faq" className="admin-panel-enter">
+          <TabPanel
+            value="faq"
+            active={activeTab}
+            mounted={mountedTabs.has("faq") || activeTab === "faq"}
+          >
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardAction>
@@ -3501,9 +3565,13 @@ export function AdminConsole() {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </TabPanel>
 
-          <TabsContent value="records" className="admin-panel-enter">
+          <TabPanel
+            value="records"
+            active={activeTab}
+            mounted={mountedTabs.has("records") || activeTab === "records"}
+          >
             <Card className="border border-border/70 bg-card/95">
               <CardHeader className="border-b border-border/70">
                 <CardTitle>兑换记录</CardTitle>
@@ -3692,7 +3760,7 @@ export function AdminConsole() {
                 />
               </CardContent>
             </Card>
-          </TabsContent>
+          </TabPanel>
         </Tabs>
       </div>
 
