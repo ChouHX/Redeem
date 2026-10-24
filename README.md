@@ -77,6 +77,7 @@ npm start
 
 - 镜像地址：`ghcr.io/chouhx/redeem`
 - 标签规则：`main` 分支 → `main`、`latest`、`sha-xxxxxxx`；tag `1.2.3` → `1.2.3`、`1.2`、`latest`；PR → 只构建不推送
+- 后端变体：`latest` 指向 **Go** 版（主版本），Node 版为 `latest-node`；Go 版同时保留 `latest-go` 兼容旧引用
 - 构建平台：默认 `linux/amd64` + `linux/arm64`（手动触发可只选单平台）
 - PR 触发只做 Dockerfile 构建校验，不推送
 
@@ -147,10 +148,18 @@ docker compose --profile go up -d --build
 docker run -d --name redeem -p 5002:5002 \
   -e ADMIN_TOKEN=your-token \
   -v "$PWD/data:/app/data" \
-  ghcr.io/chouhx/redeem:latest-go
+  ghcr.io/chouhx/redeem:latest
 ```
 
-镜像标签带 `-go` 后缀（`latest-go`、`main-go`、`1.2.3-go` 等），Node 版仍是 `latest`。
+Go 版是主版本，占 `latest`（同时保留 `latest-go` 兼容旧引用）；
+Node 版退到 `latest-node`，仅用于回滚对比。
+
+> distroless 镜像以 `nonroot`(UID 65532) 运行，挂载目录要先改属主，
+> 否则启动会报 `attempt to write a readonly database`：
+>
+> ```bash
+> chown -R 65532:65532 ./data
+> ```
 
 ### 与 Node 版的一致性
 

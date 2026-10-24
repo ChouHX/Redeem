@@ -41,14 +41,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 两套后端并行构建：Node 版保持 latest 标签，Go 版统一加 -go 后缀。
+        # 两套后端并行构建。Go 已是主版本，占 latest；Node 退到 latest-node 仅供回滚。
+        # Go 额外保留 latest-go，历史上引用过该标签的部署无需改动。
         variant:
           - label: Node
             dockerfile: ./Dockerfile
-            suffix: ""
+            suffix: "-node"
           - label: Go
             dockerfile: ./Dockerfile.go
-            suffix: "-go"
+            suffix: ""
 
     steps:
       - uses: actions/checkout@v7
@@ -84,6 +85,8 @@ jobs:
             type=sha,format=short,prefix=sha-,suffix=${{ matrix.variant.suffix }}
             type=raw,value=latest${{ matrix.variant.suffix }},enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=latest${{ matrix.variant.suffix }},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            # 兼容标签：Go 镜像同时打 latest-go
+            type=raw,value=latest-go,enable=${{ matrix.variant.label == 'Go' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
 
       - name: Build and push
         uses: docker/build-push-action@v7

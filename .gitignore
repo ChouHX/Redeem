@@ -39,3 +39,6 @@ yarn-error.log*
 *.local
 .agents/
 .workbuddy-ai/
+
+# 迁移期间的临时产物（数据库副本、增量数据、构建输出）
+tmp-migrate/
