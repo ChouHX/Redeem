@@ -122,8 +122,15 @@ export type RedeemType = {
   field_schema: FieldSchema[]
 }
 
+export type RedeemMigration = {
+  url: string
+  message?: string
+}
+
 export type RedeemCatalog = {
   types: RedeemType[]
+  // 兑换已迁到 HStore，后端通过这里下发新站点地址与提示文案。
+  migration?: RedeemMigration | null
 }
 
 export type RedeemFieldValue = FieldSchema & {

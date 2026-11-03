@@ -216,7 +216,10 @@ func codeFilterFromMap(filters map[string]any) store.CodeFilter {
 }
 
 func (a *API) handleCodeBatchStatus(w http.ResponseWriter, request *http.Request) {
-	ids, err := a.resolveCodeSelection(body(request))
+	// request.Body 只能读一次，先把 payload 取出来复用。之前这里连着调了三次
+	// body(request)，后两次都拿到空表，于是「批量禁用」永远被当成「批量恢复」。
+	payload := body(request)
+	ids, err := a.resolveCodeSelection(payload)
 	if err != nil {
 		a.fail(w, http.StatusBadRequest, err.Error())
 		return
@@ -226,14 +229,15 @@ func (a *API) handleCodeBatchStatus(w http.ResponseWriter, request *http.Request
 		return
 	}
 
-	updated, err := a.store.UpdateCodeStatusBatch(ids, str(body(request), "status"))
+	nextStatus := str(payload, "status")
+	updated, err := a.store.UpdateCodeStatusBatch(ids, nextStatus)
 	if err != nil {
 		a.fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	actionText := "恢复"
-	if str(body(request), "status") == "disabled" {
+	if nextStatus == "disabled" {
 		actionText = "禁用"
 	}
 	updatedCount := numericField(updated, "updated_count")

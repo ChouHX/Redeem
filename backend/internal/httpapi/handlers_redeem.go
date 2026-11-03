@@ -8,7 +8,7 @@ import (
 )
 
 // handleAccess 对应 POST /api/redeem/access：
-// 卡密未兑换就现场兑换，已兑换就直接把账号载入（分页）。
+// 兑换已迁到 HStore，本站只把已兑换的卡密载入（分页），新卡密引导去新站点。
 func (a *API) handleAccess(w http.ResponseWriter, request *http.Request) {
 	payload := body(request)
 	codeText := strings.TrimSpace(str(payload, "code"))
@@ -25,56 +25,11 @@ func (a *API) handleAccess(w http.ResponseWriter, request *http.Request) {
 		a.fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if codeInfo == nil {
-		a.fail(w, http.StatusNotFound, "兑换码不存在")
+	// 本站已停止新的兑换，未使用的卡密统一引导到 HStore。
+	if !a.guardRedeemedOnly(w, codeInfo) {
 		return
 	}
 	if !a.ensureRedeemDataAvailable(w, codeInfo) {
-		return
-	}
-	if codeInfo.DerivedStatus == "disabled" {
-		a.fail(w, http.StatusBadRequest, "兑换码已禁用")
-		return
-	}
-	if codeInfo.DerivedStatus == "expired" {
-		a.fail(w, http.StatusBadRequest, "兑换码已过期")
-		return
-	}
-
-	if codeInfo.Status == "unused" {
-		result, err := a.store.RedeemByCode(
-			domain.NormalizeRedeemCode(codeText), requesterIP(request), request.UserAgent())
-		if err != nil {
-			a.fail(w, http.StatusBadRequest, err.Error())
-			return
-		}
-
-		records, _, err := a.store.RecordsByCodeIDPaged(result.Code.ID, page, pageSize)
-		if err != nil {
-			a.fail(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		redeemedAt := ""
-		if result.Code.RedeemedAt != nil {
-			redeemedAt = *result.Code.RedeemedAt
-		}
-		data, err := redeemResultPayload(entriesFromRecords(records), map[string]any{
-			"source":      "newly_redeemed",
-			"code":        result.Code.Code,
-			"redeemed_at": redeemedAt,
-			"total":       result.RedeemedCount,
-			"page":        page,
-			"page_size":   pageSize,
-		}, domain.RedeemEmailType{
-			ID:   result.Type.ID,
-			Slug: result.Type.Slug,
-			Name: result.Type.Name,
-		})
-		if err != nil {
-			a.fail(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		a.ok(w, data, "兑换码已兑换并载入邮箱")
 		return
 	}
 
@@ -133,7 +88,8 @@ func (a *API) handleQuery(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if len(records) == 0 {
-		a.fail(w, http.StatusBadRequest, "该兑换码尚未兑换，暂无订单可查询")
+		a.fail(w, http.StatusBadRequest,
+			"该兑换码尚未兑换；本站兑换服务已迁移，请前往 "+migratedRedeemURL+" 兑换")
 		return
 	}
 
@@ -167,7 +123,11 @@ func (a *API) handleExchange(w http.ResponseWriter, request *http.Request) {
 		a.fail(w, http.StatusBadRequest, "兑换失败")
 		return
 	}
-	if codeInfo != nil && !a.ensureRedeemDataAvailable(w, codeInfo) {
+	// 本站不再发放新账号，只回放已兑换的结果；新卡密一律去 HStore。
+	if !a.guardRedeemedOnly(w, codeInfo) {
+		return
+	}
+	if !a.ensureRedeemDataAvailable(w, codeInfo) {
 		return
 	}
 

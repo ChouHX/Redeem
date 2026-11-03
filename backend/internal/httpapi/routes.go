@@ -141,7 +141,14 @@ func (a *API) handleCatalog(w http.ResponseWriter, _ *http.Request) {
 	for _, item := range types {
 		items = append(items, toPublicType(item))
 	}
-	a.ok(w, map[string]any{"types": items}, "兑换类型获取成功")
+	// 前端据此展示「已迁移」提示，避免用户在本站继续找兑换入口。
+	a.ok(w, map[string]any{
+		"types": items,
+		"migration": map[string]any{
+			"url":     migratedRedeemURL,
+			"message": "本站已停止新的兑换，仅支持查询已兑换的兑换码",
+		},
+	}, "兑换类型获取成功")
 }
 
 func (a *API) handleAdminVerify(w http.ResponseWriter, request *http.Request) {

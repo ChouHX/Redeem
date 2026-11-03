@@ -19,6 +19,7 @@ import {
   type MailProtocol,
   type RedeemCatalog,
   type RedeemExchangeResult,
+  type RedeemMigration,
   type RedeemOrderQueryResult,
   exchangeRedeemCode,
   fetchPublicAds,
@@ -325,6 +326,7 @@ function ResultOutputCard({
 export function RedeemConsole() {
   const redeemResultRef = useRef<HTMLDivElement | null>(null)
   const [catalog, setCatalog] = useState<RedeemCatalog["types"]>([])
+  const [migration, setMigration] = useState<RedeemMigration | null>(null)
   const [adSlot, setAdSlot] = useState<AdSlotConfig | null>(null)
   const [faq, setFaq] = useState<FaqConfig | null>(null)
   const [activeTab, setActiveTab] = useState("exchange")
@@ -345,6 +347,7 @@ export function RedeemConsole() {
     try {
       const nextCatalog = await fetchRedeemCatalog()
       setCatalog(nextCatalog.types)
+      setMigration(nextCatalog.migration ?? null)
     } catch (error) {
       notify("加载失败", formatErrorMessage(error), "destructive")
     } finally {
@@ -510,6 +513,28 @@ export function RedeemConsole() {
           <div className="mx-auto w-full max-w-4xl">
             <AdSlotRow slots={adSlot.slots} />
           </div>
+        ) : null}
+
+        {migration ? (
+          <Alert className="mx-auto w-full max-w-4xl border-primary/40 bg-primary/5">
+            <TriangleAlertIcon className="text-primary" />
+            <AlertTitle>兑换服务已迁移</AlertTitle>
+            <AlertDescription>
+              <div className="flex flex-col gap-2">
+                <span>
+                  {migration.message ??
+                    "本站已停止新的兑换，仅支持查询已兑换的兑换码。"}
+                  新的兑换码请前往{" "}
+                  <a href={migration.url}>{migration.url}</a> 兑换。
+                </span>
+                <Button asChild size="sm" className="w-fit">
+                  <a href={migration.url} target="_blank" rel="noreferrer">
+                    前往新站点兑换
+                  </a>
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
         ) : null}
 
         <section className="mx-auto flex w-full max-w-4xl flex-col gap-5">

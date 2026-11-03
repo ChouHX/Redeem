@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/redeem/backend/internal/domain"
@@ -237,10 +238,12 @@ func (s *Store) UpdateInventoryBatch(ids []int64, typeID int64, status string) (
 }
 
 // UpdateCodeStatusBatch 批量启用/禁用卡密，已兑换的不动。
+// 只接受 unused/disabled 两个值；传别的值直接报错，
+// 免得拼错状态时被静默当成「恢复启用」。
 func (s *Store) UpdateCodeStatusBatch(ids []int64, status string) (map[string]any, error) {
-	nextStatus := "unused"
-	if status == "disabled" {
-		nextStatus = "disabled"
+	nextStatus := strings.TrimSpace(status)
+	if nextStatus != "unused" && nextStatus != "disabled" {
+		return nil, fmt.Errorf("状态只能是 unused 或 disabled")
 	}
 
 	updated := 0
