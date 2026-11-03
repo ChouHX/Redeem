@@ -347,7 +347,13 @@ export function RedeemConsole() {
     try {
       const nextCatalog = await fetchRedeemCatalog()
       setCatalog(nextCatalog.types)
-      setMigration(nextCatalog.migration ?? null)
+      const nextMigration = nextCatalog.migration ?? null
+      setMigration(nextMigration)
+      // 站点一旦进入迁移模式就不再放新兑换，默认落在「订单查询」，
+      // 免得用户一进来看到「立即兑换」还以为这里还能兑。
+      if (nextMigration) {
+        setActiveTab("orders")
+      }
     } catch (error) {
       notify("加载失败", formatErrorMessage(error), "destructive")
     } finally {
@@ -570,13 +576,38 @@ export function RedeemConsole() {
                     </Button>
                   </CardAction>
                   <CardTitle className="text-xl md:text-2xl">
-                    输入兑换码
+                    {migration ? "兑换服务已迁移" : "输入兑换码"}
                   </CardTitle>
                   <CardDescription>
-                    支持大小写混输，每个兑换码仅可使用一次。
+                    {migration
+                      ? "本站已停止新的兑换，仅支持查询已兑换的兑换码。"
+                      : "支持大小写混输，每个兑换码仅可使用一次。"}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-5">
+                  {migration ? (
+                    <div className="flex flex-col gap-4">
+                      <p className="text-sm text-muted-foreground">
+                        本站已停止新的兑换，未使用的兑换码请前往{" "}
+                        <a href={migration.url} className="text-primary underline">
+                          {migration.url}
+                        </a>{" "}
+                        兑换；已兑换过的兑换码仍可在「订单查询」中查看。
+                      </p>
+                      <div>
+                        <Button asChild size="lg" className="min-w-40">
+                          <a
+                            href={migration.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <TicketIcon data-icon="inline-start" />
+                            前往新站点兑换
+                          </a>
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
                   <form
                     className="flex flex-col gap-4"
                     onSubmit={handleExchange}
@@ -639,6 +670,7 @@ export function RedeemConsole() {
                       </Button>
                     </div>
                   </form>
+                  )}
                 </CardContent>
               </Card>
 
