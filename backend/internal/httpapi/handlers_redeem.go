@@ -150,6 +150,7 @@ func (a *API) handleExchange(w http.ResponseWriter, request *http.Request) {
 		"code":              result.Code.Code,
 		"access_expires_at": a.store.AccessExpiresAt(redeemedAt),
 		"access_ttl_hours":  a.store.AccessTTLHours(),
+		"access_unlimited":  a.store.AccessUnlimited(),
 	}
 	if result.RecordID != nil {
 		meta["record_id"] = *result.RecordID

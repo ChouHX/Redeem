@@ -137,6 +137,7 @@ function ResultOutputCard({
   protocols = [],
   retentionHours,
   expiresAt,
+  unlimited = false,
   onOpenReminder,
 }: {
   badgeLabel: string
@@ -152,6 +153,7 @@ function ResultOutputCard({
   protocols?: MailProtocol[]
   retentionHours?: number
   expiresAt?: string
+  unlimited?: boolean
   onOpenReminder?: () => void
 }) {
   const visibleItems = items.slice(0, MAX_VISIBLE_RESULT_ITEMS)
@@ -234,8 +236,12 @@ function ResultOutputCard({
               <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
                 <ClockIcon className="mt-0.5 size-3.5 shrink-0" />
                 <span>
-                  {retentionHours || 24} 小时后自动删除
-                  {expiresAt ? ` · ${formatDateTime(expiresAt)}` : ""}
+                  {unlimited
+                    ? "长期保留，可随时回来查询与取件"
+                    : `${retentionHours || 24} 小时后自动删除`}
+                  {!unlimited && expiresAt
+                    ? ` · ${formatDateTime(expiresAt)}`
+                    : ""}
                 </span>
               </p>
             </div>
@@ -449,6 +455,7 @@ export function RedeemConsole() {
   }
 
   const redeemProtocols = collectMailProtocols(exchangeResult)
+  const redeemUnlimited = exchangeResult?.access_unlimited === true
   const redeemRetentionHours = exchangeResult?.access_ttl_hours || 24
   const redeemExpiresAt = exchangeResult?.access_expires_at || ""
 
@@ -690,6 +697,7 @@ export function RedeemConsole() {
                     protocols={redeemProtocols}
                     retentionHours={redeemRetentionHours}
                     expiresAt={redeemExpiresAt}
+                    unlimited={redeemUnlimited}
                     onOpenReminder={() => setRedeemReminderOpen(true)}
                   />
                 </div>
@@ -835,21 +843,25 @@ export function RedeemConsole() {
               )}
             </section>
 
-            <Alert variant="destructive">
-              <TriangleAlertIcon />
+            <Alert variant={redeemUnlimited ? "default" : "destructive"}>
+              {redeemUnlimited ? <ShieldCheckIcon /> : <TriangleAlertIcon />}
               <AlertTitle>
-                数据将在 {redeemRetentionHours} 小时后自动删除
+                {redeemUnlimited
+                  ? "数据长期保留，可随时查询"
+                  : `数据将在 ${redeemRetentionHours} 小时后自动删除`}
               </AlertTitle>
               <AlertDescription>
                 <div className="flex flex-col gap-1">
-                  {redeemExpiresAt ? (
+                  {!redeemUnlimited && redeemExpiresAt ? (
                     <span className="flex items-center gap-1.5">
                       <ClockIcon className="size-3.5 shrink-0" />
                       删除时间：{formatDateTime(redeemExpiresAt)}
                     </span>
                   ) : null}
                   <span>
-                    到期后在线访问与订单查询将关闭，届时取件需自行导入账号数据。请立即下载或复制保存。
+                    {redeemUnlimited
+                      ? "本次发放的账号数据不会自动删除，可随时用该卡密回到「订单查询」或「用户收件」重新取用。仍建议先下载或复制保存一份。"
+                      : "到期后在线访问与订单查询将关闭，届时取件需自行导入账号数据。请立即下载或复制保存。"}
                   </span>
                 </div>
               </AlertDescription>

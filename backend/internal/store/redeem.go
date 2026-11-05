@@ -928,8 +928,11 @@ func (s *Store) ListRecordGroups(typeID int64, query string, page, pageSize int)
 	return items, total, rows.Err()
 }
 
-// AccessExpiresAt 返回兑换结果的失效时间。
+// AccessExpiresAt 返回兑换结果的失效时间；不限期时返回 nil。
 func (s *Store) AccessExpiresAt(redeemedAt string) *string {
+	if s.cfg.RedeemAccessUnlimited {
+		return nil
+	}
 	parsed, ok := parseTimestamp(redeemedAt)
 	if !ok {
 		return nil
@@ -938,8 +941,11 @@ func (s *Store) AccessExpiresAt(redeemedAt string) *string {
 	return &value
 }
 
-// AccessExpired 判断是否超过取件窗口。
+// AccessExpired 判断是否超过取件窗口；不限期时永远为 false。
 func (s *Store) AccessExpired(redeemedAt string) bool {
+	if s.cfg.RedeemAccessUnlimited {
+		return false
+	}
 	parsed, ok := parseTimestamp(redeemedAt)
 	if !ok {
 		return false
@@ -947,10 +953,19 @@ func (s *Store) AccessExpired(redeemedAt string) bool {
 	return !time.Now().Before(parsed.Add(s.cfg.RedeemAccessTTL))
 }
 
-// AccessTTLHours 返回窗口小时数（保留一位小数）。
-func (s *Store) AccessTTLHours() float64 {
+// AccessTTLHours 返回窗口小时数（保留一位小数）；不限期时返回 nil。
+func (s *Store) AccessTTLHours() *float64 {
+	if s.cfg.RedeemAccessUnlimited {
+		return nil
+	}
 	hours := s.cfg.RedeemAccessTTL.Hours()
-	return float64(int(hours*10+0.5)) / 10
+	value := float64(int(hours*10+0.5)) / 10
+	return &value
+}
+
+// AccessUnlimited 对应响应里的 access_unlimited 字段。
+func (s *Store) AccessUnlimited() bool {
+	return s.cfg.RedeemAccessUnlimited
 }
 
 // parseTimestamp 兼容 SQLite 的 "YYYY-MM-DD HH:MM:SS"（UTC）与 ISO 串。
@@ -1042,9 +1057,10 @@ func (s *Store) RedeemByCode(normalizedCode, requesterIP, requesterAgent string)
 		emailType.MailProtocol = emailType.MailProtocols[0]
 
 		if status == "redeemed" {
-			// 已兑换：24 小时内重放同一卡密要拿到同样的结果（幂等）。
+			// 已兑换：重放同一卡密要拿到同样的结果（幂等）。
+			// 默认不限期限，只有记录被显式删除或显式配置了窗口且已超期才拦截。
 			if dataDeletedAt.Valid || s.AccessExpired(redeemedAt.Value) {
-				return errors.New("兑换已超过24小时，账号信息已删除；取件请手动导入账号数据")
+				return errors.New("该卡密对应的账号信息已删除；取件请手动导入账号数据")
 			}
 			result, err := s.existingRedeemResult(tx, codeID, emailType)
 			if err != nil {

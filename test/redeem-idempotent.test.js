@@ -136,7 +136,7 @@ test("inventory trigram search stays synchronized after writes", () => {
   );
 });
 
-test("expired redemption access never deletes inventory or history", () => {
+test("an old redemption never deletes inventory or history", () => {
   const type = db.ensureDefaultRedeemEmailType();
   const parsed = parseInventoryImportText({
     text: "expired@example.com----pass----client----refresh",
@@ -151,10 +151,11 @@ test("expired redemption access never deletes inventory or history", () => {
   });
   const redeemed = db.redeemByCode({ code: code.code });
   const oldRedeemedAt = new Date(
-    Date.now() - 25 * 60 * 60 * 1000,
+    Date.now() - 400 * 24 * 60 * 60 * 1000,
   ).toISOString();
   const sqliteUtcTimestamp = oldRedeemedAt.slice(0, 19).replace("T", " ");
-  assert.equal(db.isRedeemAccessExpired(sqliteUtcTimestamp), true);
+  // 默认不限期：400 天前的兑换依然可访问。
+  assert.equal(db.isRedeemAccessExpired(sqliteUtcTimestamp), false);
   db.db
     .prepare("UPDATE redeem_codes SET redeemed_at = ? WHERE id = ?")
     .run(oldRedeemedAt, redeemed.code.id);
@@ -164,12 +165,11 @@ test("expired redemption access never deletes inventory or history", () => {
     )
     .run(oldRedeemedAt, redeemed.code.id);
 
+  // 清理任务在默认配置下不应再删除任何数据。
   const purged = db.purgeExpiredRedeemDataByCodeId(redeemed.code.id);
   const expiredCode = db.getRedeemCodeByCode(code.code);
 
-  assert.equal(purged.deleted_inventory_count, 0);
-  assert.equal(purged.deleted_record_count, 0);
-  assert.equal(purged.preserved, true);
+  assert.equal(purged, null);
   assert.equal(expiredCode.data_deleted_at, null);
   assert.equal(
     db.getRedeemInventoryByIds([redeemed.inventories[0].id]).length,

@@ -51,10 +51,15 @@ export const IMAP_PORT = Number(process.env.IMAP_PORT || 993);
 export const INBOX_FOLDER_NAME = process.env.INBOX_FOLDER_NAME || "INBOX";
 export const JUNK_FOLDER_NAME = process.env.JUNK_FOLDER_NAME || "Junk";
 export const DEFAULT_EMAIL_LIMIT = Number(process.env.DEFAULT_EMAIL_LIMIT || 1);
+// 兑换数据的在线访问窗口。默认 0 = 不限期：兑换数据（账号凭据、订单记录）
+// 一旦发放就长期保留，用户随时可以回来查询与取件。
+// 需要恢复旧的 24 小时窗口时，显式设置 REDEEM_ACCESS_TTL_MS=86400000 即可。
 export const REDEEM_ACCESS_TTL_MS = Math.max(
-  60 * 1000,
-  Number(process.env.REDEEM_ACCESS_TTL_MS) || 24 * 60 * 60 * 1000
+  0,
+  Number(process.env.REDEEM_ACCESS_TTL_MS ?? 0) || 0
 );
+export const REDEEM_ACCESS_UNLIMITED = REDEEM_ACCESS_TTL_MS <= 0;
+
 export const IMAP_CONNECTION_TIMEOUT = Number(
   process.env.IMAP_CONNECTION_TIMEOUT || 15000
 );

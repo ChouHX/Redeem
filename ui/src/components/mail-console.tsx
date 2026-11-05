@@ -551,7 +551,7 @@ export function MailConsole() {
         setImportMode("manual")
         notify(
           "账号信息已删除",
-          "兑换已超过 24 小时，请切换到“临时账号”手动导入账号数据。",
+          "该卡密对应的账号数据已被删除，请切换到“临时账号”手动导入账号数据。",
           "destructive"
         )
       } else {

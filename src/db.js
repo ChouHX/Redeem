@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { DB_PATH, CLIENT_ID, DEFAULT_EMAIL_LIMIT, REDEEM_ACCESS_TTL_MS } from "./config.js";
+import { DB_PATH, CLIENT_ID, DEFAULT_EMAIL_LIMIT, REDEEM_ACCESS_TTL_MS, REDEEM_ACCESS_UNLIMITED } from "./config.js";
 import {
   DEFAULT_REDEEM_EMAIL_TYPE,
   generateRedeemCode,
@@ -1957,6 +1957,11 @@ function parseRedeemedAtTimestamp(redeemedAt) {
 }
 
 export function isRedeemAccessExpired(redeemedAt, now = Date.now()) {
+  // 未配置窗口（默认）时永久可查，不做任何时间判断。
+  if (REDEEM_ACCESS_UNLIMITED) {
+    return false;
+  }
+
   const redeemedTimestamp = parseRedeemedAtTimestamp(redeemedAt);
   if (redeemedTimestamp === null) {
     return false;
@@ -1966,6 +1971,10 @@ export function isRedeemAccessExpired(redeemedAt, now = Date.now()) {
 }
 
 export function getRedeemAccessExpiresAt(redeemedAt) {
+  if (REDEEM_ACCESS_UNLIMITED) {
+    return null;
+  }
+
   const redeemedTimestamp = parseRedeemedAtTimestamp(redeemedAt);
   if (redeemedTimestamp === null) {
     return null;
@@ -1975,7 +1984,15 @@ export function getRedeemAccessExpiresAt(redeemedAt) {
 }
 
 export function getRedeemAccessTtlHours() {
+  if (REDEEM_ACCESS_UNLIMITED) {
+    return null;
+  }
+
   return Math.round((REDEEM_ACCESS_TTL_MS / (60 * 60 * 1000)) * 10) / 10;
+}
+
+export function isRedeemAccessUnlimited() {
+  return REDEEM_ACCESS_UNLIMITED;
 }
 
 export function purgeExpiredRedeemDataByCodeId(codeId, now = Date.now()) {
@@ -2736,12 +2753,13 @@ export function redeemByCode({
     }
 
     if (codeRow.status === "redeemed") {
+      // 默认不再按时间关闭访问；只有显式配置了窗口且已超期才拦截。
       if (
         codeRow.data_deleted_at ||
         isRedeemAccessExpired(codeRow.redeemed_at)
       ) {
         throw new Error(
-          "兑换已超过24小时，账号信息已删除；取件请手动导入账号数据",
+          "该卡密对应的账号信息已删除；取件请手动导入账号数据",
         );
       }
       return buildExistingRedeemResult(codeRow);

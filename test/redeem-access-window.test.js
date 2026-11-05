@@ -9,6 +9,8 @@ const dbPath = path.join(
   `redeem-access-window-${process.pid}-${Date.now()}.db`,
 );
 
+// 默认（不设置 REDEEM_ACCESS_TTL_MS）就是「不限期」。
+delete process.env.REDEEM_ACCESS_TTL_MS;
 process.env.DB_PATH = dbPath;
 
 const db = await import("../src/db.js");
@@ -24,29 +26,24 @@ after(() => {
   }
 });
 
-test("access expiry is 24h after the SQLite UTC redemption timestamp", () => {
-  assert.equal(
-    db.getRedeemAccessExpiresAt("2026-08-24 10:30:00"),
-    "2026-08-25T10:30:00.000Z",
-  );
-  assert.equal(
-    db.getRedeemAccessExpiresAt("2026-08-24T10:30:00.000Z"),
-    "2026-08-25T10:30:00.000Z",
-  );
-  assert.equal(db.getRedeemAccessTtlHours(), 24);
+test("access is unlimited by default", () => {
+  assert.equal(db.isRedeemAccessUnlimited(), true);
+  assert.equal(db.getRedeemAccessExpiresAt("2026-08-24 10:30:00"), null);
+  assert.equal(db.getRedeemAccessTtlHours(), null);
 });
 
-test("access expiry is null when the redemption timestamp is unusable", () => {
+test("an ancient redemption stays accessible without a TTL", () => {
+  // 2020 年的记录在默认配置下也必须仍然可查。
+  assert.equal(db.isRedeemAccessExpired("2020-01-01 00:00:00"), false);
+  assert.equal(
+    db.isRedeemAccessExpired("2020-01-01T00:00:00.000Z", Date.now()),
+    false,
+  );
+});
+
+test("unusable redemption timestamps are never treated as expired", () => {
   for (const value of ["", null, undefined, "not-a-date"]) {
     assert.equal(db.getRedeemAccessExpiresAt(value), null);
     assert.equal(db.isRedeemAccessExpired(value), false);
   }
-});
-
-test("expiry boundary matches isRedeemAccessExpired", () => {
-  const redeemedAt = "2026-08-24 10:30:00";
-  const expiresAt = Date.parse(db.getRedeemAccessExpiresAt(redeemedAt));
-
-  assert.equal(db.isRedeemAccessExpired(redeemedAt, expiresAt - 1), false);
-  assert.equal(db.isRedeemAccessExpired(redeemedAt, expiresAt), true);
 });

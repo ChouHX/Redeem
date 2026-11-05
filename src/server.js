@@ -47,6 +47,7 @@ import {
   getSystemConfigValue,
   getRedeemAccessExpiresAt,
   getRedeemAccessTtlHours,
+  isRedeemAccessUnlimited,
   importRedeemInventory,
   isRedeemAccessExpired,
   redeemByCode,
@@ -202,14 +203,16 @@ function ensureRedeemDataAvailable(codeInfo, res) {
     return true;
   }
 
+  // 默认不限期限：已兑换的卡密永远可以查询、取件。
+  // 只有记录被显式标记删除（历史清理遗留）或显式配置了访问窗口且已超期时才拒绝。
   if (codeInfo.data_deleted_at || isRedeemAccessExpired(codeInfo.redeemed_at)) {
     const expired = isRedeemAccessExpired(codeInfo.redeemed_at);
     res
       .status(410)
       .json(
         fail(
-          expired || codeInfo.data_deleted_reason === "expired_24h"
-            ? "兑换已超过24小时，在线访问已关闭；取件请手动导入账号数据"
+          expired
+            ? "兑换数据访问已关闭；取件请手动导入账号数据"
             : "该卡密对应的账号信息已删除；取件请手动导入账号数据",
         ),
       );
@@ -1039,6 +1042,7 @@ app.post("/api/redeem/exchange", (req, res) => {
           code: result.code.code,
           access_expires_at: getRedeemAccessExpiresAt(result.code.redeemed_at),
           access_ttl_hours: getRedeemAccessTtlHours(),
+          access_unlimited: isRedeemAccessUnlimited(),
           type: result.type,
         }),
         "兑换成功",

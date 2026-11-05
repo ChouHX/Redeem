@@ -41,6 +41,8 @@ type Config struct {
 	IMAPTimeout     time.Duration
 
 	RedeemAccessTTL   time.Duration
+	// RedeemAccessUnlimited 为 true 时不做任何时间限制（默认）。
+	RedeemAccessUnlimited bool
 	DefaultEmailLimit int
 }
 
@@ -81,21 +83,28 @@ func Load() Config {
 		IMAPTimeout:     time.Duration(envInt("IMAP_SOCKET_TIMEOUT", 60000)) * time.Millisecond,
 
 		RedeemAccessTTL:   accessTTL(),
+		RedeemAccessUnlimited: accessUnlimited(),
 		DefaultEmailLimit: envInt("DEFAULT_EMAIL_LIMIT", 1),
 	}
 }
 
-// accessTTL 对应 config.js 的 `Math.max(60s, N || 24h)`。
+// accessUnlimited 判定是否不限期。对应 Node 版 REDEEM_ACCESS_TTL_MS=0（默认）。
+func accessUnlimited() bool {
+	return accessTTL() <= 0
+}
+
+// accessTTL 对应 config.js：默认 0 = 不限期。
+// 显式设置 REDEEM_ACCESS_TTL_MS=86400000 可恢复旧的 24 小时窗口。
 func accessTTL() time.Duration {
-	raw := os.Getenv("REDEEM_ACCESS_TTL_MS")
-	ttl := 24 * time.Hour
-	if parsed, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); err == nil && parsed != 0 {
-		ttl = time.Duration(parsed) * time.Millisecond
+	raw := strings.TrimSpace(os.Getenv("REDEEM_ACCESS_TTL_MS"))
+	if raw == "" {
+		return 0
 	}
-	if ttl < time.Minute {
-		ttl = time.Minute
+	parsed, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0
 	}
-	return ttl
+	return time.Duration(parsed) * time.Millisecond
 }
 
 func envString(key, fallback string) string {

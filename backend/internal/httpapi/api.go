@@ -332,7 +332,9 @@ func redeemResultPayload(entries []resultEntry, meta map[string]any, fallback do
 	return payload, nil
 }
 
-// ensureRedeemDataAvailable 对应 ensureRedeemDataAvailable：超窗口直接 410 拦截。
+// ensureRedeemDataAvailable 对应 ensureRedeemDataAvailable。
+// 默认不限期限：已兑换的卡密永远可查。只有记录被显式标记删除，
+// 或显式配置了访问窗口且已超期时才返回 410。
 func (a *API) ensureRedeemDataAvailable(w http.ResponseWriter, code *store.Code) bool {
 	if code == nil || code.Status != "redeemed" {
 		return true
@@ -342,7 +344,7 @@ func (a *API) ensureRedeemDataAvailable(w http.ResponseWriter, code *store.Code)
 		return false
 	}
 	if code.RedeemedAt != nil && a.store.AccessExpired(*code.RedeemedAt) {
-		a.fail(w, http.StatusGone, "兑换已超过24小时，在线访问已关闭；取件请手动导入账号数据")
+		a.fail(w, http.StatusGone, "兑换数据访问已关闭；取件请手动导入账号数据")
 		return false
 	}
 	return true

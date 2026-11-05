@@ -249,3 +249,41 @@ test("a rotated refresh token is visible when the same code is opened again", as
   assert.equal(second.status, 200);
   assert.match(second.body.data.items[0].formatted_line, /refresh-rotated$/);
 });
+
+test("a redemption older than the former 24h window is still queryable", async () => {
+  const type = createType("contract-legacy", ["imap"]);
+  const code = seedNarrowedAccount(
+    type,
+    "contract-legacy@example.com----pass----client----refresh",
+  );
+
+  const redeemed = await post("/api/redeem/exchange", { code });
+  assert.equal(redeemed.status, 200);
+  // 默认不限期，响应里显式告知前端「长期保留」。
+  assert.equal(redeemed.body.data.access_unlimited, true);
+  assert.equal(redeemed.body.data.access_expires_at, null);
+  assert.equal(redeemed.body.data.access_ttl_hours, null);
+
+  // 把兑换时间改到 400 天前，模拟历史迁移过来的老订单。
+  const legacyTimestamp = new Date(
+    Date.now() - 400 * 24 * 60 * 60 * 1000,
+  )
+    .toISOString()
+    .slice(0, 19)
+    .replace("T", " ");
+  db.db
+    .prepare("UPDATE redeem_codes SET redeemed_at = ? WHERE normalized_code = ?")
+    .run(legacyTimestamp, code);
+
+  const queried = await post("/api/redeem/query", { code });
+  assert.equal(queried.status, 200);
+  assert.equal(queried.body.data.items.length, 1);
+
+  const accessed = await post("/api/redeem/access", { code, page_size: 10 });
+  assert.equal(accessed.status, 200);
+  assert.equal(accessed.body.data.items.length, 1);
+
+  const replayed = await post("/api/redeem/exchange", { code });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.data.items.length, 1);
+});
